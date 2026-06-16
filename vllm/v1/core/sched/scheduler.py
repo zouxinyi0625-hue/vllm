@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -540,6 +541,26 @@ class Scheduler(SchedulerInterface):
                 if req.lora_request and req.lora_request.lora_int_id > 0
             )
             assert len(scheduled_loras) <= self.lora_config.max_loras
+
+        # --- autobench: decode priority budget ---
+        # Reserve a minimum fraction of token budget for decode-phase requests.
+        # When many new prefills arrive, they can starve decode throughput.
+        # This caps the remaining budget available for new prefill scheduling.
+        _decode_ratio_str = os.environ.get("VLLM_DECODE_MIN_TOKEN_RATIO", "0")
+        _decode_ratio = float(_decode_ratio_str) if _decode_ratio_str else 0.0
+        if _decode_ratio > 0 and scheduled_running_reqs:
+            total_budget = self.max_num_scheduled_tokens
+            num_running_tokens = sum(
+                num_scheduled_tokens.get(r.request_id, 0)
+                for r in scheduled_running_reqs
+            )
+            decode_reserved = int(total_budget * _decode_ratio)
+            max_new_prefill_budget = total_budget - max(
+                num_running_tokens, decode_reserved
+            )
+            if max_new_prefill_budget < token_budget:
+                token_budget = max(0, max_new_prefill_budget)
+        # --- end decode priority budget ---
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
