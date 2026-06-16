@@ -1,0 +1,38 @@
+run_id	output_tps	total_tps	stdev	status	config_summary
+E011_baseline	2020.0	8540.0	15.0	ok	fp8 | CG | MTP-k5 | mns=128 | mem=0.95 | mnbt=16384 | DeepGEMM
+20260608_091812	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384
+20260608_091827	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384
+20260608_103242	1984.48	8730.4	47.74	ok	fp8 | CG | MTP-k3 | mns=128 | mnbt=16384
+20260608_105542	2025.02	8872.53	5.57	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384
+20260608_110245	0.0	0.0	0.0	crash	fp8 | CG | MTP-k9 | mns=128 | mnbt=16384
+20260608_103814	1997.02	8646.74	22.29	ok	fp8 | CG | MTP-k5 | mns=256 | mnbt=16384
+20260608_110244	2030.29	8870.83	21.01	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped
+20260608_110346	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | moe=humming
+20260608_103954	1996.15	8803.3	31.15	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | mml=16384
+20260608_110503	1955.14	8514.48	28.27	ok	fp8 | CG | MTP-k5 | mns=96 | mnbt=16384
+20260608_110602	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | moe=triton
+20260608_103757	2005.95	8686.84	23.82	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=24576
+20260608_110303	2002.93	8732.7	34.94	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=8192
+20260608_112819	1982.39	8648.52	7.22	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=32768
+20260609_022256	2007.38	8766.04	13.42	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=24576 | humming-grouped
+20260609_024809	1961.06	8576.98	10.97	ok	fp8 | CG | MTP-k5 | mns=192 | mnbt=16384 | humming-grouped
+20260609_031236	1869.49	8275.3	4.48	ok	fp8 | CG | MTP-k5 | mns=64 | mnbt=16384 | humming-grouped
+20260609_022309	2000.07	8681.59	29.89	ok	fp8 | CG | MTP-k5 | mns=192 | mnbt=16384 | humming-indexed
+20260609_024830	1960.07	8545.59	3.67	ok	fp8 | CG | MTP-k5 | mns=192 | mnbt=32768 | humming-grouped
+20260609_031447	2011.43	8908.26	25.65	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=24576 | mml=16384 | humming-grouped
+20260609_022234	1994.79	8848.11	25.35	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | mml=16384 | humming-grouped
+20260609_025052	1978.15	8684.54	2.6	ok	fp8 | CG | MTP-k7 | mns=128 | mnbt=16384 | humming-grouped
+20260609_031526	2025.13	8841.67	2.82	ok	fp8 | CG | MTP-k3 | mns=128 | mnbt=16384 | humming-grouped
+20260609_023222	1976.36	8637.61	28.56	ok	fp8 | CG | MTP-k5 | mns=192 | mnbt=24576 | humming-grouped
+20260609_025657	1993.39	8739.34	64.18	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=8192 | humming-grouped
+20260609_032208	1985.73	8692.1	12.39	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-indexed
+20260609_022641	2031.63	8759.47	18.79	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped
+20260609_031753	2041.08	8901.59	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | async-sched
+20260609_032325	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | kv-fp8
+20260609_034430	1996.37	8756.44	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped | f16acc
+20260609_035938	1997.09	8769.21	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | marlin-forced
+20260609_041534	1905.15	8299.38	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | no-prefix-cache
+20260609_052200	1990.87	8750.68	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | moe=marlin
+20260609_053709	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped | async-sched
+20260609_053853	0.0	0.0	0.0	crash	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped | async-sched
+20260609_055137	2054.02	8995.19	0.0	ok	fp8 | CG | MTP-k5 | mns=128 | mnbt=16384 | humming-grouped | async-sched

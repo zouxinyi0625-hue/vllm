@@ -1,0 +1,4 @@
+#!/bin/bash
+curl https://fabricrouter-azureglobalprivate.ingress-dlis.ingress.cus.microsoft-falcon.net/dlis-coreranker.chrona-gemma4/health
+curl https://fabricrouter-azureglobalprivate.ingress-dlis.ingress.cus.microsoft-falcon.net/dlis-coreranker.chrona-gemma4/v1/chat/completions -H "Content-Type: application/json" -d '{"model":"gemma4","messages":[{"role":"user","content":"Hello"}],"max_tokens":128}'
+bash benchmarks/gemma4_moe_fp8/serve/test_performance.sh --base-url https://fabricrouter-azureglobalprivate.ingress-dlis.ingress.cus.microsoft-falcon.net/dlis-coreranker.chrona-gemma4 --num-prompts 1000 --model gemma4
