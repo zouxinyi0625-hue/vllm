@@ -436,7 +436,16 @@ class EngineCore:
         # or finished and not yet removed from the batch.
         if not self.scheduler.has_requests():
             return {}, False
+
+        from vllm.v1.metrics.bottleneck import get_bottleneck_profiler
+        _bp = get_bottleneck_profiler()
+        _bp.begin_step()
+
+        _bp.begin_phase("scheduler")
         scheduler_output = self.scheduler.schedule()
+        _bp.end_phase("scheduler")
+
+        _bp.begin_phase("model_forward")
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
         with (
@@ -446,13 +455,32 @@ class EngineCore:
             model_output = future.result()
             if model_output is None:
                 model_output = self.model_executor.sample_tokens(grammar_output)
+        _bp.end_phase("model_forward")
 
+        _bp.begin_phase("postprocess")
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        _bp.end_phase("postprocess")
+
+        _bp.record_batch_info(
+            num_scheduled_tokens=scheduler_output.total_num_scheduled_tokens,
+            num_prefill_tokens=sum(
+                n for req_id, n in scheduler_output.num_scheduled_tokens.items()
+                if req_id in {r.req_id for r in scheduler_output.scheduled_new_reqs}
+            ),
+            num_decode_tokens=sum(
+                n for req_id, n in scheduler_output.num_scheduled_tokens.items()
+                if req_id not in {r.req_id for r in scheduler_output.scheduled_new_reqs}
+            ),
+            num_running_reqs=len(scheduler_output.num_scheduled_tokens),
+            batch_size=len(scheduler_output.num_scheduled_tokens),
+            kv_cache_usage=self.scheduler.kv_cache_manager.usage,
+        )
+        _bp.end_step()
 
         return engine_core_outputs, scheduler_output.total_num_scheduled_tokens > 0
 
