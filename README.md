@@ -1,3 +1,5 @@
+**Baseline: vLLM v0.21.1rc1.dev270+g6cbe448ee**
+
 <!-- markdownlint-disable MD001 MD041 -->
 <p align="center">
   <picture>
