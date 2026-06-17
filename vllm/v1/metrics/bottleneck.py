@@ -181,11 +181,13 @@ class BottleneckProfiler:
 
         The accumulator is activated immediately. Model forward code calls
         record_start/record_end directly via get_layer_events().
+        Also activates the WorkerDetailCollector for worker-process timing.
         """
         if not self.detail:
             return
         self._layer_events = LayerEventAccumulator()
         self._layer_events.activate()
+        _WORKER_DETAIL.activate(self._layer_events)
 
     def begin_step(self):
         if not self.enabled:
@@ -210,11 +212,6 @@ class BottleneckProfiler:
             self._current.scheduler_ms = elapsed_ms
         elif name == "model_forward":
             self._current.model_forward_ms = elapsed_ms
-            if self._layer_events:
-                attn, moe, mlp = self._layer_events.collect_step_ms()
-                self._current.attention_ms = attn
-                self._current.moe_ms = moe
-                self._current.mlp_ms = mlp
         elif name == "preprocess":
             self._current.preprocess_ms = elapsed_ms
         elif name == "postprocess":
@@ -320,11 +317,79 @@ class BottleneckProfiler:
         return None
 
 
+class WorkerDetailCollector:
+    """Collects sub-component timing in the worker process independently.
+
+    Since engine core and worker are separate processes, they cannot share
+    Python objects. This collector runs in the worker process, accumulates
+    per-step detail timing from LayerEventAccumulator, and periodically
+    flushes a detail JSON file that is merged with the main profiler output.
+    """
+
+    def __init__(self):
+        self._enabled = _ENABLED and _DETAIL
+        self._interval = _INTERVAL
+        self._output_path = Path(_OUTPUT_PATH).with_suffix(".detail.json")
+        self._layer_events: LayerEventAccumulator | None = None
+        self._step_count = 0
+        self._history_attn: deque[float] = deque(maxlen=_INTERVAL)
+        self._history_moe: deque[float] = deque(maxlen=_INTERVAL)
+        self._history_mlp: deque[float] = deque(maxlen=_INTERVAL)
+
+    def activate(self, layer_events: LayerEventAccumulator):
+        self._layer_events = layer_events
+
+    def begin_step(self):
+        if not self._enabled or self._layer_events is None:
+            return
+        self._layer_events.begin_step()
+
+    def end_step(self):
+        if not self._enabled or self._layer_events is None:
+            return
+        attn, moe, mlp = self._layer_events.collect_step_ms()
+        self._history_attn.append(attn)
+        self._history_moe.append(moe)
+        self._history_mlp.append(mlp)
+        self._step_count += 1
+
+        if self._step_count % self._interval == 0:
+            self._flush()
+
+    def _flush(self):
+        n = len(self._history_attn)
+        if n == 0:
+            return
+        avg_attn = sum(self._history_attn) / n
+        avg_moe = sum(self._history_moe) / n
+        avg_mlp = sum(self._history_mlp) / n
+        total = avg_attn + avg_moe + avg_mlp
+
+        detail = {
+            "num_steps": n,
+            "avg_attention_ms": round(avg_attn, 3),
+            "avg_moe_ms": round(avg_moe, 3),
+            "avg_mlp_ms": round(avg_mlp, 3),
+            "attention_pct": round(avg_attn / total * 100, 1) if total > 0 else 0,
+            "moe_pct": round(avg_moe / total * 100, 1) if total > 0 else 0,
+            "mlp_pct": round(avg_mlp / total * 100, 1) if total > 0 else 0,
+        }
+
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._output_path, "w") as f:
+            json.dump(detail, f, indent=2)
+
+
 _PROFILER = BottleneckProfiler()
+_WORKER_DETAIL = WorkerDetailCollector()
 
 
 def get_bottleneck_profiler() -> BottleneckProfiler:
     return _PROFILER
+
+
+def get_worker_detail() -> WorkerDetailCollector:
+    return _WORKER_DETAIL
 
 
 def get_layer_events() -> LayerEventAccumulator | None:
@@ -333,4 +398,4 @@ def get_layer_events() -> LayerEventAccumulator | None:
     Called from model forward code (e.g., Gemma4DecoderLayer.forward()).
     Returns None if detail profiling is not enabled.
     """
-    return _PROFILER._layer_events
+    return _WORKER_DETAIL._layer_events
