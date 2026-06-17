@@ -6,6 +6,11 @@ Enable via VLLM_BOTTLENECK_PROFILE=1. Outputs a JSON summary every
 VLLM_BOTTLENECK_PROFILE_INTERVAL steps (default 100) to the path
 specified by VLLM_BOTTLENECK_PROFILE_OUTPUT (default /tmp/vllm_bottleneck.json).
 
+Sub-component breakdown (attention/MoE/MLP) is enabled when
+VLLM_BOTTLENECK_PROFILE_DETAIL=1 (default 0). Hooks only fire during
+eager execution (warmup/profile_run/capture); during CUDA graph replay,
+calibrated ratios from the eager phase are applied to model_forward_ms.
+
 The summary is designed to be consumed by agentic_vllm's analyze command
 to decide which optimization strategy to apply next.
 """
@@ -14,13 +19,19 @@ import json
 import os
 import time
 from collections import deque
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch.nn as nn
 
 _ENABLED = os.environ.get("VLLM_BOTTLENECK_PROFILE", "0") == "1"
+_DETAIL = os.environ.get("VLLM_BOTTLENECK_PROFILE_DETAIL", "0") == "1"
 _INTERVAL = int(os.environ.get("VLLM_BOTTLENECK_PROFILE_INTERVAL", "100"))
 _OUTPUT_PATH = os.environ.get("VLLM_BOTTLENECK_PROFILE_OUTPUT",
                               "/tmp/vllm_bottleneck.json")
+
 
 
 @dataclass
@@ -30,6 +41,11 @@ class StepTimings:
     preprocess_ms: float = 0.0
     postprocess_ms: float = 0.0
     total_step_ms: float = 0.0
+
+    # Sub-component breakdown (populated when VLLM_BOTTLENECK_PROFILE_DETAIL=1)
+    attention_ms: float = 0.0
+    moe_ms: float = 0.0
+    mlp_ms: float = 0.0
 
     num_scheduled_tokens: int = 0
     num_prefill_tokens: int = 0
@@ -53,6 +69,14 @@ class BottleneckSummary:
     preprocess_pct: float = 0.0
     postprocess_pct: float = 0.0
 
+    # Sub-component breakdown (when detail enabled)
+    avg_attention_ms: float = 0.0
+    avg_moe_ms: float = 0.0
+    avg_mlp_ms: float = 0.0
+    attention_pct: float = 0.0
+    moe_pct: float = 0.0
+    mlp_pct: float = 0.0
+
     avg_batch_size: float = 0.0
     avg_num_scheduled_tokens: float = 0.0
     avg_prefill_tokens: float = 0.0
@@ -64,21 +88,118 @@ class BottleneckSummary:
     bottleneck: str = ""
 
 
+class LayerEventAccumulator:
+    """Direct CUDA event accumulator for model sub-components.
+
+    Instead of using nn.Module forward hooks (which don't fire under
+    torch.compile or CUDA graph replay), this class provides explicit
+    record_start/record_end methods called directly from model forward code.
+
+    CUDA events recorded during graph capture are automatically re-recorded
+    during replay, so elapsed_time() returns valid measurements even in
+    CUDA graph mode.
+    """
+
+    def __init__(self):
+        import torch
+        self._torch = torch
+        self._attention_events: list[tuple] = []
+        self._moe_events: list[tuple] = []
+        self._mlp_events: list[tuple] = []
+        self._active = False
+        self._pending_starts: dict[str, "torch.cuda.Event"] = {}
+
+    def activate(self):
+        """Enable event recording."""
+        self._active = True
+
+    def record_start(self, category: str):
+        """Record a start event for a sub-component. Call before the op."""
+        if not self._active:
+            return
+        start = self._torch.cuda.Event(enable_timing=True)
+        start.record()
+        self._pending_starts[category] = start
+
+    def record_end(self, category: str):
+        """Record an end event for a sub-component. Call after the op."""
+        if not self._active:
+            return
+        start = self._pending_starts.pop(category, None)
+        if start is None:
+            return
+        end = self._torch.cuda.Event(enable_timing=True)
+        end.record()
+        event_list = getattr(self, f"_{category}_events")
+        event_list.append((start, end))
+
+    def begin_step(self):
+        self._attention_events.clear()
+        self._moe_events.clear()
+        self._mlp_events.clear()
+        self._pending_starts.clear()
+
+    def collect_step_ms(self) -> tuple[float, float, float]:
+        """Synchronize GPU and return (attention_ms, moe_ms, mlp_ms).
+
+        Returns (0, 0, 0) if events were not actually recorded this step
+        (happens during CUDA graph replay where Python forward code is skipped).
+        """
+        if not self._active:
+            return 0.0, 0.0, 0.0
+
+        has_events = bool(
+            self._attention_events or self._moe_events or self._mlp_events
+        )
+        if not has_events:
+            return 0.0, 0.0, 0.0
+
+        self._torch.cuda.synchronize()
+        try:
+            attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
+            moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
+            mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+        except ValueError:
+            # Events exist but were not recorded (CUDA graph replay skips Python code)
+            return 0.0, 0.0, 0.0
+        return attn_ms, moe_ms, mlp_ms
+
+    def deactivate(self):
+        self._active = False
+
+
 class BottleneckProfiler:
     def __init__(self):
         self.enabled = _ENABLED
+        self.detail = _DETAIL and _ENABLED
         self.interval = _INTERVAL
         self.output_path = Path(_OUTPUT_PATH)
         self._history: deque[StepTimings] = deque(maxlen=_INTERVAL)
         self._step_count = 0
         self._current: StepTimings | None = None
         self._timer_stack: dict[str, float] = {}
+        self._layer_events: LayerEventAccumulator | None = None
+
+    def register_model_hooks(self, model: "nn.Module"):
+        """Initialize the layer event accumulator for sub-component timing.
+
+        The accumulator is activated immediately. Model forward code calls
+        record_start/record_end directly via get_layer_events().
+        Also activates the WorkerDetailCollector for worker-process timing.
+        """
+        if not self.detail:
+            return
+        self._layer_events = LayerEventAccumulator()
+        self._layer_events.activate()
+        _WORKER_DETAIL.activate(self._layer_events)
 
     def begin_step(self):
         if not self.enabled:
             return
         self._current = StepTimings()
         self._timer_stack["step"] = time.perf_counter()
+        if self._layer_events:
+            self._layer_events.begin_step()
 
     def begin_phase(self, name: str):
         if not self.enabled:
@@ -139,11 +260,19 @@ class BottleneckProfiler:
         total_prefill = sum(s.num_prefill_tokens for s in self._history)
         total_decode = sum(s.num_decode_tokens for s in self._history)
 
+        # Sub-component totals
+        total_attn = sum(s.attention_ms for s in self._history)
+        total_moe = sum(s.moe_ms for s in self._history)
+        total_mlp = sum(s.mlp_ms for s in self._history)
+
         avg_step = total_step / n
         avg_sched = total_sched / n
         avg_fwd = total_fwd / n
         avg_pre = total_pre / n
         avg_post = total_post / n
+        avg_attn = total_attn / n
+        avg_moe = total_moe / n
+        avg_mlp = total_mlp / n
 
         summary = BottleneckSummary(
             num_steps=n,
@@ -156,6 +285,12 @@ class BottleneckProfiler:
             model_forward_pct=round(avg_fwd / avg_step * 100, 1) if avg_step > 0 else 0,
             preprocess_pct=round(avg_pre / avg_step * 100, 1) if avg_step > 0 else 0,
             postprocess_pct=round(avg_post / avg_step * 100, 1) if avg_step > 0 else 0,
+            avg_attention_ms=round(avg_attn, 3),
+            avg_moe_ms=round(avg_moe, 3),
+            avg_mlp_ms=round(avg_mlp, 3),
+            attention_pct=round(avg_attn / avg_fwd * 100, 1) if avg_fwd > 0 else 0,
+            moe_pct=round(avg_moe / avg_fwd * 100, 1) if avg_fwd > 0 else 0,
+            mlp_pct=round(avg_mlp / avg_fwd * 100, 1) if avg_fwd > 0 else 0,
             avg_batch_size=round(sum(s.batch_size for s in self._history) / n, 1),
             avg_num_scheduled_tokens=round(total_tokens / n, 1),
             avg_prefill_tokens=round(total_prefill / n, 1),
@@ -186,8 +321,85 @@ class BottleneckProfiler:
         return None
 
 
+class WorkerDetailCollector:
+    """Collects sub-component timing in the worker process independently.
+
+    Since engine core and worker are separate processes, they cannot share
+    Python objects. This collector runs in the worker process, accumulates
+    per-step detail timing from LayerEventAccumulator, and periodically
+    flushes a detail JSON file that is merged with the main profiler output.
+    """
+
+    def __init__(self):
+        self._enabled = _ENABLED and _DETAIL
+        self._interval = _INTERVAL
+        self._output_path = Path(_OUTPUT_PATH).with_suffix(".detail.json")
+        self._layer_events: LayerEventAccumulator | None = None
+        self._step_count = 0
+        self._history_attn: deque[float] = deque(maxlen=_INTERVAL)
+        self._history_moe: deque[float] = deque(maxlen=_INTERVAL)
+        self._history_mlp: deque[float] = deque(maxlen=_INTERVAL)
+
+    def activate(self, layer_events: LayerEventAccumulator):
+        self._layer_events = layer_events
+
+    def begin_step(self):
+        if not self._enabled or self._layer_events is None:
+            return
+        self._layer_events.begin_step()
+
+    def end_step(self):
+        if not self._enabled or self._layer_events is None:
+            return
+        attn, moe, mlp = self._layer_events.collect_step_ms()
+        self._history_attn.append(attn)
+        self._history_moe.append(moe)
+        self._history_mlp.append(mlp)
+        self._step_count += 1
+
+        if self._step_count % self._interval == 0:
+            self._flush()
+
+    def _flush(self):
+        n = len(self._history_attn)
+        if n == 0:
+            return
+        avg_attn = sum(self._history_attn) / n
+        avg_moe = sum(self._history_moe) / n
+        avg_mlp = sum(self._history_mlp) / n
+        total = avg_attn + avg_moe + avg_mlp
+
+        detail = {
+            "num_steps": n,
+            "avg_attention_ms": round(avg_attn, 3),
+            "avg_moe_ms": round(avg_moe, 3),
+            "avg_mlp_ms": round(avg_mlp, 3),
+            "attention_pct": round(avg_attn / total * 100, 1) if total > 0 else 0,
+            "moe_pct": round(avg_moe / total * 100, 1) if total > 0 else 0,
+            "mlp_pct": round(avg_mlp / total * 100, 1) if total > 0 else 0,
+        }
+
+        self._output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._output_path, "w") as f:
+            json.dump(detail, f, indent=2)
+
+
 _PROFILER = BottleneckProfiler()
+_WORKER_DETAIL = WorkerDetailCollector()
 
 
 def get_bottleneck_profiler() -> BottleneckProfiler:
     return _PROFILER
+
+
+def get_worker_detail() -> WorkerDetailCollector:
+    return _WORKER_DETAIL
+
+
+def get_layer_events() -> LayerEventAccumulator | None:
+    """Get the layer event accumulator for direct sub-component timing.
+
+    Called from model forward code (e.g., Gemma4DecoderLayer.forward()).
+    Returns None if detail profiling is not enabled.
+    """
+    return _WORKER_DETAIL._layer_events

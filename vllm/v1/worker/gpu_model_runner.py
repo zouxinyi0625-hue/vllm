@@ -3963,6 +3963,9 @@ class GPUModelRunner(
                 "after execute_model() returns None."
             )
 
+        from vllm.v1.metrics.bottleneck import get_worker_detail
+        get_worker_detail().begin_step()
+
         if self.routed_experts_initialized:
             self.routed_experts_capturer.clear_buffer()
 
@@ -4538,6 +4541,8 @@ class GPUModelRunner(
                     routing_data=self.routed_experts_cpu[:total].numpy(),
                     slot_mapping=self.routed_experts_slot_mapping_cpu[:total].numpy(),
                 )
+            from vllm.v1.metrics.bottleneck import get_worker_detail
+            get_worker_detail().end_step()
             return output
 
         with record_function_or_nullcontext(
@@ -5117,6 +5122,11 @@ class GPUModelRunner(
                     eplb_models += 1
 
                 time_after_load = time.perf_counter()
+
+                # Register bottleneck profiler sub-component hooks
+                from vllm.v1.metrics.bottleneck import get_bottleneck_profiler
+                get_bottleneck_profiler().register_model_hooks(self.model)
+
             self.model_memory_usage = m.consumed_memory
         except torch.cuda.OutOfMemoryError as e:
             msg = (
