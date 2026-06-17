@@ -7,8 +7,9 @@ VLLM_BOTTLENECK_PROFILE_INTERVAL steps (default 100) to the path
 specified by VLLM_BOTTLENECK_PROFILE_OUTPUT (default /tmp/vllm_bottleneck.json).
 
 Sub-component breakdown (attention/MoE/MLP) is enabled when
-VLLM_BOTTLENECK_PROFILE_DETAIL=1 (default 0). This adds ~2-5% overhead
-due to CUDA event synchronization per layer.
+VLLM_BOTTLENECK_PROFILE_DETAIL=1 (default 0). Hooks only fire during
+eager execution (warmup/profile_run/capture); during CUDA graph replay,
+calibrated ratios from the eager phase are applied to model_forward_ms.
 
 The summary is designed to be consumed by agentic_vllm's analyze command
 to decide which optimization strategy to apply next.
@@ -30,6 +31,8 @@ _DETAIL = os.environ.get("VLLM_BOTTLENECK_PROFILE_DETAIL", "0") == "1"
 _INTERVAL = int(os.environ.get("VLLM_BOTTLENECK_PROFILE_INTERVAL", "100"))
 _OUTPUT_PATH = os.environ.get("VLLM_BOTTLENECK_PROFILE_OUTPUT",
                               "/tmp/vllm_bottleneck.json")
+_CALIBRATION_STEPS = int(
+    os.environ.get("VLLM_BOTTLENECK_PROFILE_CALIBRATION_STEPS", "10"))
 
 
 @dataclass
@@ -92,8 +95,9 @@ class ModelForwardHooks:
     Attaches forward pre/post hooks to Attention, FusedMoE, and MLP modules.
     Accumulates per-step GPU time using torch.cuda.Event pairs.
 
-    Compatible with torch.compile: uses external dict for state (no module
-    __setattr__) and skips during dynamo tracing.
+    During CUDA graph replay, hooks do not fire. To handle this, we calibrate
+    sub-component ratios during the initial eager steps (warmup/profile_run)
+    and apply them to model_forward_ms during graph replay.
     """
 
     def __init__(self):
@@ -105,6 +109,18 @@ class ModelForwardHooks:
         self._handles: list = []
         self._active = False
         self._pending: dict[int, "torch.cuda.Event"] = {}
+
+        # Calibration: collect ratios from eager steps, apply during replay
+        self._calibration_steps = 0
+        self._calibration_limit = _CALIBRATION_STEPS
+        self._calibrated = False
+        self._ratio_attention = 0.0
+        self._ratio_moe = 0.0
+        self._ratio_mlp = 0.0
+        self._cal_attn_sum = 0.0
+        self._cal_moe_sum = 0.0
+        self._cal_mlp_sum = 0.0
+        self._cal_total_sum = 0.0
 
     def register(self, model: "nn.Module"):
         from vllm.model_executor.layers.attention.attention import Attention
@@ -177,21 +193,56 @@ class ModelForwardHooks:
         self._moe_events.clear()
         self._mlp_events.clear()
 
-    def collect_step_ms(self) -> tuple[float, float, float]:
-        """Synchronize and sum up GPU time for each category.
+    def collect_step_ms(
+        self, model_forward_ms: float = 0.0
+    ) -> tuple[float, float, float]:
+        """Return (attention_ms, moe_ms, mlp_ms) for this step.
 
-        Returns (attention_ms, moe_ms, mlp_ms).
-        Must be called after GPU work is done (after model output is ready).
+        If hooks fired (eager mode), computes actual GPU time and updates
+        calibration state. If hooks did not fire (CUDA graph replay), applies
+        calibrated ratios to model_forward_ms.
         """
         if not self._active:
             return 0.0, 0.0, 0.0
 
-        self._torch.cuda.synchronize()
+        has_events = bool(
+            self._attention_events or self._moe_events or self._mlp_events
+        )
 
-        attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
-        moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
-        mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
-        return attn_ms, moe_ms, mlp_ms
+        if has_events:
+            self._torch.cuda.synchronize()
+            attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
+            moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
+            mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+
+            # Accumulate for calibration
+            if not self._calibrated:
+                total = attn_ms + moe_ms + mlp_ms
+                if total > 0:
+                    self._cal_attn_sum += attn_ms
+                    self._cal_moe_sum += moe_ms
+                    self._cal_mlp_sum += mlp_ms
+                    self._cal_total_sum += total
+                    self._calibration_steps += 1
+
+                if self._calibration_steps >= self._calibration_limit:
+                    self._ratio_attention = (
+                        self._cal_attn_sum / self._cal_total_sum)
+                    self._ratio_moe = self._cal_moe_sum / self._cal_total_sum
+                    self._ratio_mlp = self._cal_mlp_sum / self._cal_total_sum
+                    self._calibrated = True
+
+            return attn_ms, moe_ms, mlp_ms
+
+        if self._calibrated and model_forward_ms > 0:
+            # CUDA graph replay: estimate from calibrated ratios
+            return (
+                model_forward_ms * self._ratio_attention,
+                model_forward_ms * self._ratio_moe,
+                model_forward_ms * self._ratio_mlp,
+            )
+
+        return 0.0, 0.0, 0.0
 
     def remove(self):
         for h in self._handles:
@@ -251,7 +302,8 @@ class BottleneckProfiler:
         elif name == "model_forward":
             self._current.model_forward_ms = elapsed_ms
             if self._hooks:
-                attn, moe, mlp = self._hooks.collect_step_ms()
+                attn, moe, mlp = self._hooks.collect_step_ms(
+                    model_forward_ms=elapsed_ms)
                 self._current.attention_ms = attn
                 self._current.moe_ms = moe
                 self._current.mlp_ms = mlp
