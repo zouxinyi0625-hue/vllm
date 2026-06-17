@@ -91,6 +91,9 @@ class ModelForwardHooks:
 
     Attaches forward pre/post hooks to Attention, FusedMoE, and MLP modules.
     Accumulates per-step GPU time using torch.cuda.Event pairs.
+
+    Compatible with torch.compile: uses external dict for state (no module
+    __setattr__) and skips during dynamo tracing.
     """
 
     def __init__(self):
@@ -101,6 +104,7 @@ class ModelForwardHooks:
         self._mlp_events: list[tuple] = []
         self._handles: list = []
         self._active = False
+        self._pending: dict[int, "torch.cuda.Event"] = {}
 
     def register(self, model: "nn.Module"):
         from vllm.model_executor.layers.attention.attention import Attention
@@ -128,8 +132,6 @@ class ModelForwardHooks:
                     and not isinstance(module, FusedMoE) \
                     and not hasattr(module, "weight") \
                     and len(list(module.children())) > 0:
-                # Match MLP container modules (e.g. GemmaMLP, Gemma4MLP)
-                # but not leaf linear layers or FusedMoE
                 seen_mlp.add(id(module))
                 self._handles.append(
                     module.register_forward_pre_hook(self._pre_hook("mlp")))
@@ -140,30 +142,33 @@ class ModelForwardHooks:
 
     def _pre_hook(self, category: str):
         torch = self._torch
+        pending = self._pending
 
+        @torch.compiler.disable
         def hook(module, input):
             if not self._active:
                 return
             start = torch.cuda.Event(enable_timing=True)
             start.record()
-            module._bp_start_event = start
+            pending[id(module)] = start
 
         return hook
 
     def _post_hook(self, category: str):
         torch = self._torch
         event_list = getattr(self, f"_{category}_events")
+        pending = self._pending
 
+        @torch.compiler.disable
         def hook(module, input, output):
             if not self._active:
                 return
-            start = getattr(module, "_bp_start_event", None)
+            start = pending.pop(id(module), None)
             if start is None:
                 return
             end = torch.cuda.Event(enable_timing=True)
             end.record()
             event_list.append((start, end))
-            del module._bp_start_event
 
         return hook
 
@@ -206,20 +211,25 @@ class BottleneckProfiler:
         self._current: StepTimings | None = None
         self._timer_stack: dict[str, float] = {}
         self._hooks: ModelForwardHooks | None = None
+        self._deferred_model: "nn.Module | None" = None
 
     def register_model_hooks(self, model: "nn.Module"):
         """Attach sub-component timing hooks to model layers.
 
-        Call after model is loaded. Only active when detail profiling enabled.
+        Call after model is loaded. Hooks are registered lazily on first
+        begin_step() to avoid interfering with torch.compile/profile_run.
         """
         if not self.detail:
             return
-        self._hooks = ModelForwardHooks()
-        self._hooks.register(model)
+        self._deferred_model = model
 
     def begin_step(self):
         if not self.enabled:
             return
+        if self._deferred_model is not None:
+            self._hooks = ModelForwardHooks()
+            self._hooks.register(self._deferred_model)
+            self._deferred_model = None
         self._current = StepTimings()
         self._timer_stack["step"] = time.perf_counter()
         if self._hooks:
