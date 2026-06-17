@@ -5117,6 +5117,11 @@ class GPUModelRunner(
                     eplb_models += 1
 
                 time_after_load = time.perf_counter()
+
+                # Register bottleneck profiler sub-component hooks
+                from vllm.v1.metrics.bottleneck import get_bottleneck_profiler
+                get_bottleneck_profiler().register_model_hooks(self.model)
+
             self.model_memory_usage = m.consumed_memory
         except torch.cuda.OutOfMemoryError as e:
             msg = (
