@@ -34,6 +34,7 @@ from vllm.distributed import (
     get_tensor_model_parallel_world_size,
 )
 from vllm.forward_context import get_forward_context
+from vllm.v1.metrics.bottleneck import get_layer_events
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import get_act_and_mul_fn
 from vllm.model_executor.layers.attention import Attention
@@ -708,11 +709,16 @@ class Gemma4DecoderLayer(nn.Module):
 
         hidden_states = self.input_layernorm(residual)
 
+        _le = get_layer_events()
+        if _le is not None:
+            _le.record_start("attention")
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
             **kwargs,
         )
+        if _le is not None:
+            _le.record_end("attention")
 
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = hidden_states + residual
@@ -720,7 +726,11 @@ class Gemma4DecoderLayer(nn.Module):
 
         # MLP runs unconditionally (same inputs for MoE and non-MoE)
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
+        if _le is not None:
+            _le.record_start("mlp")
         hidden_states = self.mlp(hidden_states)
+        if _le is not None:
+            _le.record_end("mlp")
 
         if self.enable_moe_block:
             hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states)
@@ -729,7 +739,11 @@ class Gemma4DecoderLayer(nn.Module):
             # matching the HF transformers forward path
             router_logits = self.router(residual)
             hidden_states_2 = self.pre_feedforward_layernorm_2(residual)
+            if _le is not None:
+                _le.record_start("moe")
             hidden_states_2 = self.moe(hidden_states_2, router_logits)
+            if _le is not None:
+                _le.record_end("moe")
             hidden_states_2 = self.post_feedforward_layernorm_2(hidden_states_2)
 
             # Combine MLP and MoE outputs

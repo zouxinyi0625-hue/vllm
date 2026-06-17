@@ -31,8 +31,7 @@ _DETAIL = os.environ.get("VLLM_BOTTLENECK_PROFILE_DETAIL", "0") == "1"
 _INTERVAL = int(os.environ.get("VLLM_BOTTLENECK_PROFILE_INTERVAL", "100"))
 _OUTPUT_PATH = os.environ.get("VLLM_BOTTLENECK_PROFILE_OUTPUT",
                               "/tmp/vllm_bottleneck.json")
-_CALIBRATION_STEPS = int(
-    os.environ.get("VLLM_BOTTLENECK_PROFILE_CALIBRATION_STEPS", "10"))
+
 
 
 @dataclass
@@ -89,15 +88,16 @@ class BottleneckSummary:
     bottleneck: str = ""
 
 
-class ModelForwardHooks:
-    """CUDA event-based timing hooks for model sub-components.
+class LayerEventAccumulator:
+    """Direct CUDA event accumulator for model sub-components.
 
-    Attaches forward pre/post hooks to Attention, FusedMoE, and MLP modules.
-    Accumulates per-step GPU time using torch.cuda.Event pairs.
+    Instead of using nn.Module forward hooks (which don't fire under
+    torch.compile or CUDA graph replay), this class provides explicit
+    record_start/record_end methods called directly from model forward code.
 
-    During CUDA graph replay, hooks do not fire. To handle this, we calibrate
-    sub-component ratios during the initial eager steps (warmup/profile_run)
-    and apply them to model_forward_ms during graph replay.
+    CUDA events recorded during graph capture are automatically re-recorded
+    during replay, so elapsed_time() returns valid measurements even in
+    CUDA graph mode.
     """
 
     def __init__(self):
@@ -106,101 +106,44 @@ class ModelForwardHooks:
         self._attention_events: list[tuple] = []
         self._moe_events: list[tuple] = []
         self._mlp_events: list[tuple] = []
-        self._handles: list = []
         self._active = False
-        self._pending: dict[int, "torch.cuda.Event"] = {}
+        self._pending_starts: dict[str, "torch.cuda.Event"] = {}
 
-        # Calibration: collect ratios from eager steps, apply during replay
-        self._calibration_steps = 0
-        self._calibration_limit = _CALIBRATION_STEPS
-        self._calibrated = False
-        self._ratio_attention = 0.0
-        self._ratio_moe = 0.0
-        self._ratio_mlp = 0.0
-        self._cal_attn_sum = 0.0
-        self._cal_moe_sum = 0.0
-        self._cal_mlp_sum = 0.0
-        self._cal_total_sum = 0.0
-
-    def register(self, model: "nn.Module"):
-        from vllm.model_executor.layers.attention.attention import Attention
-        from vllm.model_executor.layers.fused_moe.layer import FusedMoE
-
-        seen_attn = set()
-        seen_moe = set()
-        seen_mlp = set()
-
-        for name, module in model.named_modules():
-            if isinstance(module, Attention) and id(module) not in seen_attn:
-                seen_attn.add(id(module))
-                self._handles.append(
-                    module.register_forward_pre_hook(self._pre_hook("attention")))
-                self._handles.append(
-                    module.register_forward_hook(self._post_hook("attention")))
-            elif isinstance(module, FusedMoE) and id(module) not in seen_moe:
-                seen_moe.add(id(module))
-                self._handles.append(
-                    module.register_forward_pre_hook(self._pre_hook("moe")))
-                self._handles.append(
-                    module.register_forward_hook(self._post_hook("moe")))
-            elif "mlp" in name.lower() and hasattr(module, "forward") \
-                    and id(module) not in seen_mlp \
-                    and not isinstance(module, FusedMoE) \
-                    and not hasattr(module, "weight") \
-                    and len(list(module.children())) > 0:
-                seen_mlp.add(id(module))
-                self._handles.append(
-                    module.register_forward_pre_hook(self._pre_hook("mlp")))
-                self._handles.append(
-                    module.register_forward_hook(self._post_hook("mlp")))
-
+    def activate(self):
+        """Enable event recording."""
         self._active = True
 
-    def _pre_hook(self, category: str):
-        torch = self._torch
-        pending = self._pending
+    def record_start(self, category: str):
+        """Record a start event for a sub-component. Call before the op."""
+        if not self._active:
+            return
+        start = self._torch.cuda.Event(enable_timing=True)
+        start.record()
+        self._pending_starts[category] = start
 
-        @torch.compiler.disable
-        def hook(module, input):
-            if not self._active:
-                return
-            start = torch.cuda.Event(enable_timing=True)
-            start.record()
-            pending[id(module)] = start
-
-        return hook
-
-    def _post_hook(self, category: str):
-        torch = self._torch
+    def record_end(self, category: str):
+        """Record an end event for a sub-component. Call after the op."""
+        if not self._active:
+            return
+        start = self._pending_starts.pop(category, None)
+        if start is None:
+            return
+        end = self._torch.cuda.Event(enable_timing=True)
+        end.record()
         event_list = getattr(self, f"_{category}_events")
-        pending = self._pending
-
-        @torch.compiler.disable
-        def hook(module, input, output):
-            if not self._active:
-                return
-            start = pending.pop(id(module), None)
-            if start is None:
-                return
-            end = torch.cuda.Event(enable_timing=True)
-            end.record()
-            event_list.append((start, end))
-
-        return hook
+        event_list.append((start, end))
 
     def begin_step(self):
         self._attention_events.clear()
         self._moe_events.clear()
         self._mlp_events.clear()
+        self._pending_starts.clear()
 
-    def collect_step_ms(
-        self, model_forward_ms: float = 0.0
-    ) -> tuple[float, float, float]:
-        """Return (attention_ms, moe_ms, mlp_ms) for this step.
+    def collect_step_ms(self) -> tuple[float, float, float]:
+        """Synchronize GPU and return (attention_ms, moe_ms, mlp_ms).
 
-        If hooks fired (eager mode), computes actual GPU time and updates
-        calibration state. If hooks did not fire (CUDA graph replay), applies
-        calibrated ratios to model_forward_ms.
+        CUDA events recorded during graph capture are automatically
+        re-recorded during graph replay, so this works in all modes.
         """
         if not self._active:
             return 0.0, 0.0, 0.0
@@ -208,46 +151,16 @@ class ModelForwardHooks:
         has_events = bool(
             self._attention_events or self._moe_events or self._mlp_events
         )
+        if not has_events:
+            return 0.0, 0.0, 0.0
 
-        if has_events:
-            self._torch.cuda.synchronize()
-            attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
-            moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
-            mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+        self._torch.cuda.synchronize()
+        attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
+        moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
+        mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+        return attn_ms, moe_ms, mlp_ms
 
-            # Accumulate for calibration
-            if not self._calibrated:
-                total = attn_ms + moe_ms + mlp_ms
-                if total > 0:
-                    self._cal_attn_sum += attn_ms
-                    self._cal_moe_sum += moe_ms
-                    self._cal_mlp_sum += mlp_ms
-                    self._cal_total_sum += total
-                    self._calibration_steps += 1
-
-                if self._calibration_steps >= self._calibration_limit:
-                    self._ratio_attention = (
-                        self._cal_attn_sum / self._cal_total_sum)
-                    self._ratio_moe = self._cal_moe_sum / self._cal_total_sum
-                    self._ratio_mlp = self._cal_mlp_sum / self._cal_total_sum
-                    self._calibrated = True
-
-            return attn_ms, moe_ms, mlp_ms
-
-        if self._calibrated and model_forward_ms > 0:
-            # CUDA graph replay: estimate from calibrated ratios
-            return (
-                model_forward_ms * self._ratio_attention,
-                model_forward_ms * self._ratio_moe,
-                model_forward_ms * self._ratio_mlp,
-            )
-
-        return 0.0, 0.0, 0.0
-
-    def remove(self):
-        for h in self._handles:
-            h.remove()
-        self._handles.clear()
+    def deactivate(self):
         self._active = False
 
 
@@ -261,30 +174,26 @@ class BottleneckProfiler:
         self._step_count = 0
         self._current: StepTimings | None = None
         self._timer_stack: dict[str, float] = {}
-        self._hooks: ModelForwardHooks | None = None
-        self._deferred_model: "nn.Module | None" = None
+        self._layer_events: LayerEventAccumulator | None = None
 
     def register_model_hooks(self, model: "nn.Module"):
-        """Attach sub-component timing hooks to model layers.
+        """Initialize the layer event accumulator for sub-component timing.
 
-        Call after model is loaded. Hooks are registered lazily on first
-        begin_step() to avoid interfering with torch.compile/profile_run.
+        The accumulator is activated immediately. Model forward code calls
+        record_start/record_end directly via get_layer_events().
         """
         if not self.detail:
             return
-        self._deferred_model = model
+        self._layer_events = LayerEventAccumulator()
+        self._layer_events.activate()
 
     def begin_step(self):
         if not self.enabled:
             return
-        if self._deferred_model is not None:
-            self._hooks = ModelForwardHooks()
-            self._hooks.register(self._deferred_model)
-            self._deferred_model = None
         self._current = StepTimings()
         self._timer_stack["step"] = time.perf_counter()
-        if self._hooks:
-            self._hooks.begin_step()
+        if self._layer_events:
+            self._layer_events.begin_step()
 
     def begin_phase(self, name: str):
         if not self.enabled:
@@ -301,9 +210,8 @@ class BottleneckProfiler:
             self._current.scheduler_ms = elapsed_ms
         elif name == "model_forward":
             self._current.model_forward_ms = elapsed_ms
-            if self._hooks:
-                attn, moe, mlp = self._hooks.collect_step_ms(
-                    model_forward_ms=elapsed_ms)
+            if self._layer_events:
+                attn, moe, mlp = self._layer_events.collect_step_ms()
                 self._current.attention_ms = attn
                 self._current.moe_ms = moe
                 self._current.mlp_ms = mlp
@@ -417,3 +325,12 @@ _PROFILER = BottleneckProfiler()
 
 def get_bottleneck_profiler() -> BottleneckProfiler:
     return _PROFILER
+
+
+def get_layer_events() -> LayerEventAccumulator | None:
+    """Get the layer event accumulator for direct sub-component timing.
+
+    Called from model forward code (e.g., Gemma4DecoderLayer.forward()).
+    Returns None if detail profiling is not enabled.
+    """
+    return _PROFILER._layer_events
