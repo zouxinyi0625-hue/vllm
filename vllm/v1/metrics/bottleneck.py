@@ -142,8 +142,8 @@ class LayerEventAccumulator:
     def collect_step_ms(self) -> tuple[float, float, float]:
         """Synchronize GPU and return (attention_ms, moe_ms, mlp_ms).
 
-        CUDA events recorded during graph capture are automatically
-        re-recorded during graph replay, so this works in all modes.
+        Returns (0, 0, 0) if events were not actually recorded this step
+        (happens during CUDA graph replay where Python forward code is skipped).
         """
         if not self._active:
             return 0.0, 0.0, 0.0
@@ -155,9 +155,13 @@ class LayerEventAccumulator:
             return 0.0, 0.0, 0.0
 
         self._torch.cuda.synchronize()
-        attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
-        moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
-        mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+        try:
+            attn_ms = sum(s.elapsed_time(e) for s, e in self._attention_events)
+            moe_ms = sum(s.elapsed_time(e) for s, e in self._moe_events)
+            mlp_ms = sum(s.elapsed_time(e) for s, e in self._mlp_events)
+        except ValueError:
+            # Events exist but were not recorded (CUDA graph replay skips Python code)
+            return 0.0, 0.0, 0.0
         return attn_ms, moe_ms, mlp_ms
 
     def deactivate(self):
