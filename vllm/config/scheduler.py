@@ -245,6 +245,12 @@ class SchedulerConfig:
             if self.long_prefill_token_threshold == 0:
                 self.long_prefill_token_threshold = int(max_model_len * 0.04)
 
+            # Allow env var override for MoE-optimized prefill batching
+            import os
+            override = os.getenv("VLLM_LONG_PREFILL_THRESHOLD")
+            if override:
+                self.long_prefill_token_threshold = int(override)
+
             logger.info(
                 "Concurrent partial prefills enabled with "
                 "max_num_partial_prefills=%d, max_long_partial_prefills=%d, "
