@@ -22,6 +22,8 @@ from collections.abc import Iterable
 from dataclasses import replace
 from itertools import islice
 
+import os
+
 import regex as re
 import torch
 from torch import nn
@@ -693,6 +695,14 @@ class Gemma4DecoderLayer(nn.Module):
         # Layer scalar (loaded from checkpoint) — applies to ALL text layers
         self.register_buffer("layer_scalar", torch.ones(1))
 
+        self._parallel_moe = (
+            self.enable_moe_block
+            and os.environ.get("VLLM_GEMMA4_PARALLEL_MOE", "0") == "1"
+        )
+        self._moe_stream: torch.cuda.Stream | None = None
+        self._fork_event: torch.cuda.Event | None = None
+        self._join_event: torch.cuda.Event | None = None
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -720,20 +730,47 @@ class Gemma4DecoderLayer(nn.Module):
 
         # MLP runs unconditionally (same inputs for MoE and non-MoE)
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
 
-        if self.enable_moe_block:
+        if self.enable_moe_block and self._parallel_moe:
+            if self._moe_stream is None:
+                self._moe_stream = torch.cuda.Stream(
+                    device=hidden_states.device
+                )
+                self._fork_event = torch.cuda.Event()
+                self._join_event = torch.cuda.Event()
+
+            main_stream = torch.cuda.current_stream()
+            self._fork_event.record(main_stream)
+            self._moe_stream.wait_event(self._fork_event)
+
+            with torch.cuda.stream(self._moe_stream):
+                router_logits = self.router(residual)
+                hidden_states_2 = self.pre_feedforward_layernorm_2(residual)
+                hidden_states_2 = self.moe(hidden_states_2, router_logits)
+                hidden_states_2 = self.post_feedforward_layernorm_2(
+                    hidden_states_2
+                )
+                self._join_event.record(self._moe_stream)
+
+            hidden_states = self.mlp(hidden_states)
             hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states)
 
-            # Router and MoE experts see the residual (pre-MLP state),
-            # matching the HF transformers forward path
+            main_stream.wait_event(self._join_event)
+            hidden_states = hidden_states_1 + hidden_states_2
+
+        elif self.enable_moe_block:
+            hidden_states = self.mlp(hidden_states)
+            hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states)
+
             router_logits = self.router(residual)
             hidden_states_2 = self.pre_feedforward_layernorm_2(residual)
             hidden_states_2 = self.moe(hidden_states_2, router_logits)
             hidden_states_2 = self.post_feedforward_layernorm_2(hidden_states_2)
 
-            # Combine MLP and MoE outputs
             hidden_states = hidden_states_1 + hidden_states_2
+
+        else:
+            hidden_states = self.mlp(hidden_states)
 
         hidden_states = self.post_feedforward_layernorm(hidden_states)
         hidden_states = hidden_states + residual
