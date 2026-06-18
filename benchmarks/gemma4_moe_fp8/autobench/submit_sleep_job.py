@@ -5,35 +5,41 @@ Holds the machine for interactive use.
 Usage:
     python submit_sleep_job.py
 """
+import os
+
 from azure.identity import DefaultAzureCredential
 from azure.ai.ml import MLClient, Input, command
 from azure.ai.ml.entities import JobResourceConfiguration, SshJobService, JupyterLabJobService
 from azure.ai.ml.constants import InputOutputModes
 
-# Workspace
+# Workspace (set via environment variables)
+SUBSCRIPTION_ID = os.environ["AZURE_SUBSCRIPTION_ID"]
+RESOURCE_GROUP = os.environ["AZURE_RESOURCE_GROUP"]
+WORKSPACE = os.environ["AZURE_WORKSPACE"]
+
 ml_client = MLClient(
     DefaultAzureCredential(),
-    subscription_id="b6dc87f3-c479-49c8-8cb5-7896da3ff895",
-    resource_group_name="AMLStudio",
-    workspace_name="NewsFeedL2_AML",
+    subscription_id=SUBSCRIPTION_ID,
+    resource_group_name=RESOURCE_GROUP,
+    workspace_name=WORKSPACE,
 )
 
 # Virtual Cluster
 VC_ARM_ID = (
-    "/subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895"
+    f"/subscriptions/{SUBSCRIPTION_ID}"
     "/resourceGroups/rg-cs-ranking-ml-singularity"
     "/providers/Microsoft.MachineLearningServices/virtualClusters/ranking"
 )
 
 # Managed Identity (required by new Singularity policy)
 UAI_RESOURCE_ID = (
-    "/subscriptions/b6dc87f3-c479-49c8-8cb5-7896da3ff895"
-    "/resourceGroups/AMLStudio"
+    f"/subscriptions/{SUBSCRIPTION_ID}"
+    f"/resourceGroups/{RESOURCE_GROUP}"
     "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml"
 )
 
-# SSH public key for interactive access (paste your key here)
-SSH_PUB_KEY = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCpOz0QGUOBnEqMn+DwzbltVytWcFB/J10EpA0Rf5UXMtScYFKKYAi50qyhhdT5nj0LharII8p42w5MGPMLepqey6oFkVjDWrkTmzYe2nfkZpT9+GjGIEnbSvSL5CidsSWwDTzsgb5eLu0bExWHRwXscTLIfYQBNurdinw+z6k96DS1W4YTclJveoKFMJTT0ZpNd8FnGlQeJuO++xR1zVxK938rGEHO1bY3Aph3PdgsTYliJvYNqihM/p+az8UK+zRNwRdbE175UZALbuD77mVuF8hG19ggLxi3HeyO9RE8t9VhNn6nyZDtMQtRxpgqx83tYSXqUatMwoHXiONQ1gMVbKhW6kNb7vvwCAOmUU/In4psgM1RiEv/VNVSV/9CusYDsCOvGPT0mOliaRMebA2KyHPmjkKdQNW8FTUM9No1cFsigMtsj84PwjcZYbPGFCTbifutUjav7p0PN+9AyLCOEyikX9SVGq06Qo4/oW5/aRMOQRwRala9S4pQjvj3kduQp8jNITMW+yn5AI6lgE457rbSmMpE6YxhVgVQjF1Mb6szxrQoMntqTW5O1ypr691vcnk9yph9fv9BVc+b+wdFbe8qHoYCDtDSBPYMq7GdwYqoDkpWdi5VBYRiMOGPNH5PB6S6xLBLD3Ybm+tHW/vvT6d/qjd3wYvg2dAuGwc/Mw== xinyizou@microsoft.com"
+# SSH public key: read from SSH_PUB_KEY env var
+SSH_PUB_KEY = os.environ["SSH_PUB_KEY"]
 
 # Resource configuration
 res_cfg = JobResourceConfiguration(
@@ -52,7 +58,7 @@ res_cfg = JobResourceConfiguration(
 if __name__ == "__main__":
     job = command(
         command="sleep infinity",
-        environment="azureml:vllm_gemma4:5",
+        environment="azureml:vllm_gemma4:3",
         compute=VC_ARM_ID,
         resources=res_cfg,
         inputs={

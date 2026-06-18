@@ -33,10 +33,10 @@ from azure.ai.ml.constants import InputOutputModes
 from azure.ai.ml.entities import JobResourceConfiguration, SshJobService
 from azure.identity import DefaultAzureCredential
 
-# --- Workspace ---
-SUBSCRIPTION_ID = "b6dc87f3-c479-49c8-8cb5-7896da3ff895"
-RESOURCE_GROUP = "AMLStudio"
-WORKSPACE = "NewsFeedL2_AML"
+# --- Workspace (set via environment variables) ---
+SUBSCRIPTION_ID = os.environ["AZURE_SUBSCRIPTION_ID"]
+RESOURCE_GROUP = os.environ["AZURE_RESOURCE_GROUP"]
+WORKSPACE = os.environ["AZURE_WORKSPACE"]
 
 # --- Virtual Cluster ---
 VC_ARM_ID = (
@@ -52,19 +52,8 @@ UAI_RESOURCE_ID = (
     "/providers/Microsoft.ManagedIdentity/userAssignedIdentities/rankfun_aml"
 )
 
-SSH_PUB_KEY = (
-    "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCpOz0QGUOBnEqMn+DwzbltVytWcFB/"
-    "J10EpA0Rf5UXMtScYFKKYAi50qyhhdT5nj0LharII8p42w5MGPMLepqey6oFkVjDWrkT"
-    "mzYe2nfkZpT9+GjGIEnbSvSL5CidsSWwDTzsgb5eLu0bExWHRwXscTLIfYQBNurdinw+"
-    "z6k96DS1W4YTclJveoKFMJTT0ZpNd8FnGlQeJuO++xR1zVxK938rGEHO1bY3Aph3Pdg"
-    "sTYliJvYNqihM/p+az8UK+zRNwRdbE175UZALbuD77mVuF8hG19ggLxi3HeyO9RE8t9V"
-    "hNn6nyZDtMQtRxpgqx83tYSXqUatMwoHXiONQ1gMVbKhW6kNb7vvwCAOmUU/In4psgM"
-    "1RiEv/VNVSV/9CusYDsCOvGPT0mOliaRMebA2KyHPmjkKdQNW8FTUM9No1cFsigMtsj"
-    "84PwjcZYbPGFCTbifutUjav7p0PN+9AyLCOEyikX9SVGq06Qo4/oW5/aRMOQRwRala9S"
-    "4pQjvj3kduQp8jNITMW+yn5AI6lgE457rbSmMpE6YxhVgVQjF1Mb6szxrQoMntqTW5O1"
-    "ypr691vcnk9yph9fv9BVc+b+wdFbe8qHoYCDtDSBPYMq7GdwYqoDkpWdi5VBYRiMOGPN"
-    "H5PB6S6xLBLD3Ybm+tHW/vvT6d/qjd3wYvg2dAuGwc/Mw== xinyizou@microsoft.com"
-)
+# SSH public key: read from SSH_PUB_KEY env var
+SSH_PUB_KEY = os.environ["SSH_PUB_KEY"]
 
 ENVIRONMENT = "azureml:vllm_gemma4:4"
 INSTANCE_TYPE = "Singularity.ND12am_A100_v4"
