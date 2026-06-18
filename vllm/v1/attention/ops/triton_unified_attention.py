@@ -9,6 +9,8 @@
 
 from typing import Any
 
+import os
+
 import torch
 
 import vllm.envs as envs
@@ -749,6 +751,10 @@ def _get_tile_size(
     is_prefill: bool,
 ) -> int:
     """Select tile size with Gemma3-specific optimization."""
+    _force_tile = os.environ.get("VLLM_TRITON_ATTN_TILE_SIZE")
+    if _force_tile:
+        return int(_force_tile)
+
     if _is_gemma3_attention(head_size, sliding_window):
         # Gemma3: use 32 for decode (default is 16)
         return 32
