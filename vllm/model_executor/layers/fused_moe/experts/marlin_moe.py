@@ -321,10 +321,15 @@ def fused_marlin_moe(
     assert topk_weights.dtype == torch.float32
 
     # M block size selection logic
-    # TODO: tune this further for specific models
-    for block_size_m in [8, 16, 32, 48, 64]:
-        if M * topk / E / block_size_m < 0.9:
-            break
+    # Allow env var override for tuning kernel launch overhead vs GPU utilization
+    import os
+    _force_block = os.environ.get("VLLM_MOE_BLOCK_SIZE_M")
+    if _force_block:
+        block_size_m = int(_force_block)
+    else:
+        for block_size_m in [8, 16, 32, 48, 64]:
+            if M * topk / E / block_size_m < 0.9:
+                break
 
     if input_dtype is not None and input_dtype.itemsize == 1:
         block_size_m = max(block_size_m, 16)
