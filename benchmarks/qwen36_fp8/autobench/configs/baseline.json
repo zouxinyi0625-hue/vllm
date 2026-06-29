@@ -1,0 +1,9 @@
+{
+    "max_num_seqs": 128,
+    "max_num_batched_tokens": 16384,
+    "gpu_memory_utilization": 0.95,
+    "max_model_len": 24576,
+    "quantization": "fp8",
+    "kv_cache_dtype": "auto",
+    "enforce_eager": false
+}
