@@ -5,5 +5,8 @@
     "max_model_len": 24576,
     "kv_cache_dtype": "auto",
     "enforce_eager": false,
-    "language_model_only": true
+    "speculative_config": {
+        "method": "mtp",
+        "num_speculative_tokens": 5
+    }
 }
