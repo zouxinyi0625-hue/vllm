@@ -7,7 +7,7 @@
     "enforce_eager": false,
     "language_model_only": true,
     "speculative_config": {
-        "model": "z-lab/Qwen3.5-122B-A10B-DFlash",
+        "model": "z-lab/Qwen3.6-35B-A3B-DFlash",
         "method": "dflash",
         "num_speculative_tokens": 15
     }
