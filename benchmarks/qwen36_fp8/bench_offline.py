@@ -294,7 +294,7 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--max-num-seqs", required=True,
                     help="Comma list, e.g. 64,128,256,512,1024")
-    ap.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B")
+    ap.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B-FP8")
     ap.add_argument("--dataset", default=None,
                     help="Override the scenario's dataset path.")
     ap.add_argument("--num-prompts", type=int, default=None,

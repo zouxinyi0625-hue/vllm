@@ -54,7 +54,7 @@ def main() -> int:
     ap.add_argument("--src", required=True,
                     help="Single JSONL file OR directory of JSONL files OR glob.")
     ap.add_argument("--dst", required=True, help="Output JSONL")
-    ap.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B")
+    ap.add_argument("--model", default="Qwen/Qwen3.6-35B-A3B-FP8"))
     ap.add_argument("--min-tokens", type=int, default=1)
     ap.add_argument("--max-tokens", type=int, required=True,
                     help="Drop prompts whose rendered token count exceeds this.")

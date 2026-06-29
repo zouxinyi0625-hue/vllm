@@ -46,7 +46,7 @@ fi
 DATASET_PATH="${DATASET_PATH:-${SCRIPT_DIR}/../datasets/sc1_delta_v2.jsonl}"
 
 # Tokenizer path
-TOKENIZER_PATH="${QWEN_MODEL_PATH:-Qwen/Qwen3.6-35B-A3B}"
+TOKENIZER_PATH="${QWEN_MODEL_PATH:-Qwen/Qwen3.6-35B-A3B-FP8}"
 
 echo "=== Qwen3.6 FP8 Online Serving Benchmark ==="
 echo "  Target: ${BASE_URL}"

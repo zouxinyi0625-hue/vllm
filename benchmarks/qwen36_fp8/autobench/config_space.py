@@ -35,7 +35,6 @@ PARAM_SPACE = {
 }
 
 FIXED_PARAMS = {
-    "quantization": "fp8",
     "kv_cache_dtype": "auto",
     "enforce_eager": False,
     "gpu_memory_utilization": 0.95,

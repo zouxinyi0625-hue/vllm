@@ -6,17 +6,16 @@ set -xe
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-MODEL="${QWEN_MODEL_PATH:-Qwen/Qwen3.6-35B-A3B}"
-QUANT="fp8"
+MODEL="${QWEN_MODEL_PATH:-Qwen/Qwen3.6-35B-A3B-FP8}"
+QUANT=""  # model is pre-quantized FP8, no --quantization needed
 KV_DTYPE=""  # auto
 MNS_SWEEP="64,128,256,512"
 REPS=3
 CHUNK_SIZE=200
 
 echo "============================================"
-echo "  Qwen3.6-35B-A3B FP8 Full Benchmark Pass"
+echo "  Qwen3.6-35B-A3B-FP8 Full Benchmark Pass"
 echo "  Model: $MODEL"
-echo "  Quantization: $QUANT"
 echo "============================================"
 
 # --- Offline throughput (sc1) ---
@@ -25,7 +24,6 @@ echo ">>> Offline throughput - scenario sc1 <<<"
 python3 bench_offline.py \
   --scenario sc1 \
   --model "$MODEL" \
-  --quantization "$QUANT" \
   --max-num-seqs "$MNS_SWEEP" \
   --reps "$REPS" \
   --chunk-size "$CHUNK_SIZE" \
@@ -37,7 +35,6 @@ echo ">>> Offline throughput - scenario sc2 <<<"
 python3 bench_offline.py \
   --scenario sc2 \
   --model "$MODEL" \
-  --quantization "$QUANT" \
   --max-num-seqs "$MNS_SWEEP" \
   --reps "$REPS" \
   --chunk-size "$CHUNK_SIZE" \

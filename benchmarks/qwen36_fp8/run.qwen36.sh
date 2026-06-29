@@ -20,7 +20,7 @@ else
 fi
 
 # --- 3. Model Path Resolution ---
-model="Qwen/Qwen3.6-35B-A3B"
+model="Qwen/Qwen3.6-35B-A3B-FP8"
 [[ -d "$model_dir" ]] && model="$model_dir"
 
 # --- 4. Execute vLLM ---
@@ -34,7 +34,6 @@ vllm serve "$model" \
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --dtype "$DTYPE" \
-  --quantization fp8 \
   --kv-cache-dtype auto \
   --trust-remote-code \
   --language-model-only \

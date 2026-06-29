@@ -35,7 +35,7 @@ SCENARIO = dict(
     output_len=8192,
 )
 
-MODEL = os.environ.get("QWEN_MODEL_PATH", "Qwen/Qwen3.6-35B-A3B")
+MODEL = os.environ.get("QWEN_MODEL_PATH", "Qwen/Qwen3.6-35B-A3B-FP8")
 
 RESULTS_TSV = SCRIPT_DIR / "results.tsv"
 RESULTS_DIR = SCRIPT_DIR / "run_results"

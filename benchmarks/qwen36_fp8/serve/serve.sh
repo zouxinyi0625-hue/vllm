@@ -23,7 +23,7 @@ fi
 model="${QWEN_MODEL_PATH:-${model_dir}/model}"
 
 # Fallback to HuggingFace if local path doesn't exist
-[[ ! -d "$model" ]] && model="Qwen/Qwen3.6-35B-A3B"
+[[ ! -d "$model" ]] && model="Qwen/Qwen3.6-35B-A3B-FP8"
 
 # --- 3. Environment ---
 export VLLM_ATTENTION_BACKEND=${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}
@@ -48,7 +48,6 @@ vllm serve "$model" \
   --max-model-len "$MAX_LEN" \
   --gpu-memory-utilization "$GPU_UTIL" \
   --dtype auto \
-  --quantization fp8 \
   --kv-cache-dtype auto \
   --trust-remote-code \
   --max-num-seqs "$MAX_NUM_SEQS" \
