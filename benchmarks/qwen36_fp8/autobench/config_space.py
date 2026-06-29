@@ -121,6 +121,10 @@ def config_to_llm_kwargs(cfg: dict, scenario_cfg: dict) -> dict:
         kwargs["async_scheduling"] = cfg["async_scheduling"]
     if cfg.get("attention_backend"):
         kwargs["attention_backend"] = cfg["attention_backend"]
+    if cfg.get("language_model_only"):
+        kwargs["language_model_only"] = True
+    if cfg.get("speculative_config"):
+        kwargs["speculative_config"] = cfg["speculative_config"]
     return kwargs
 
 
