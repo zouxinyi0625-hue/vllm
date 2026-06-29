@@ -703,6 +703,33 @@ class Gemma4DecoderLayer(nn.Module):
         self._fork_event: torch.cuda.Event | None = None
         self._join_event: torch.cuda.Event | None = None
 
+    @torch.compiler.disable
+    def _parallel_mlp_moe(
+        self,
+        mlp_input: torch.Tensor,
+        residual: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._moe_stream is None:
+            self._moe_stream = torch.cuda.Stream(device=mlp_input.device)
+            self._fork_event = torch.cuda.Event()
+            self._join_event = torch.cuda.Event()
+
+        main_stream = torch.cuda.current_stream()
+        self._fork_event.record(main_stream)
+        self._moe_stream.wait_event(self._fork_event)
+
+        with torch.cuda.stream(self._moe_stream):
+            router_logits = self.router(residual)
+            hidden_states_2 = self.pre_feedforward_layernorm_2(residual)
+            hidden_states_2 = self.moe(hidden_states_2, router_logits)
+            hidden_states_2 = self.post_feedforward_layernorm_2(hidden_states_2)
+            self._join_event.record(self._moe_stream)
+
+        mlp_output = self.mlp(mlp_input)
+
+        main_stream.wait_event(self._join_event)
+        return mlp_output, hidden_states_2
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -732,30 +759,10 @@ class Gemma4DecoderLayer(nn.Module):
         hidden_states = self.pre_feedforward_layernorm(hidden_states)
 
         if self.enable_moe_block and self._parallel_moe:
-            if self._moe_stream is None:
-                self._moe_stream = torch.cuda.Stream(
-                    device=hidden_states.device
-                )
-                self._fork_event = torch.cuda.Event()
-                self._join_event = torch.cuda.Event()
-
-            main_stream = torch.cuda.current_stream()
-            self._fork_event.record(main_stream)
-            self._moe_stream.wait_event(self._fork_event)
-
-            with torch.cuda.stream(self._moe_stream):
-                router_logits = self.router(residual)
-                hidden_states_2 = self.pre_feedforward_layernorm_2(residual)
-                hidden_states_2 = self.moe(hidden_states_2, router_logits)
-                hidden_states_2 = self.post_feedforward_layernorm_2(
-                    hidden_states_2
-                )
-                self._join_event.record(self._moe_stream)
-
-            hidden_states = self.mlp(hidden_states)
+            hidden_states, hidden_states_2 = self._parallel_mlp_moe(
+                hidden_states, residual
+            )
             hidden_states_1 = self.post_feedforward_layernorm_1(hidden_states)
-
-            main_stream.wait_event(self._join_event)
             hidden_states = hidden_states_1 + hidden_states_2
 
         elif self.enable_moe_block:
