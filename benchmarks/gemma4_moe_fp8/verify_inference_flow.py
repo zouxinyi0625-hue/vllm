@@ -46,9 +46,10 @@ def main():
         model=args.model,
         trust_remote_code=True,
         max_model_len=4096,
-        gpu_memory_utilization=0.50,
+        gpu_memory_utilization=0.95,
         enforce_eager=True,
         max_num_seqs=1,
+        quantization="fp8",
     )
 
     # Access internal model
