@@ -23,7 +23,6 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=1, help="Tokens to generate")
     args = ap.parse_args()
 
-    from vllm import LLM, SamplingParams
     from transformers import AutoTokenizer
 
     print("=" * 80)
@@ -41,23 +40,22 @@ def main():
     print(f"  Tokens: {tokens}")
     print(f"  Num tokens: {len(token_ids)}")
 
-    # Load model
-    llm = LLM(
-        model=args.model,
-        trust_remote_code=True,
-        max_model_len=4096,
-        gpu_memory_utilization=0.95,
-        enforce_eager=True,
-        max_num_seqs=1,
-        quantization="fp8",
-    )
+    # Load model directly via transformers (not vLLM) for hook access
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    import torch
 
-    # Access internal model
-    try:
-        model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    except AttributeError:
-        # vLLM v1 path
-        model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+    print(f"\n[LOADING] Loading model with transformers (for hook access)...")
+    print(f"  This loads in BF16. For FP8 text_only model, weights are small enough.")
+
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+    )
+    model.eval()
+    print(f"  Model loaded: {model.__class__.__name__}")
+    print(f"  Device: {next(model.parameters()).device}")
 
     # =========================================================================
     # Register hooks to capture intermediate tensors
@@ -151,15 +149,20 @@ def main():
     # Run inference
     # =========================================================================
     print(f"\n[INFERENCE] Running forward pass...")
-    sampling = SamplingParams(temperature=0, max_tokens=args.max_tokens)
-    outputs = llm.generate([args.prompt], sampling)
+    input_ids = tok.encode(args.prompt, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        outputs = model.generate(
+            input_ids,
+            max_new_tokens=args.max_tokens,
+            do_sample=False,
+        )
 
-    generated_text = outputs[0].outputs[0].text
-    generated_ids = outputs[0].outputs[0].token_ids
+    generated_ids = outputs[0][input_ids.shape[1]:]
+    generated_text = tok.decode(generated_ids, skip_special_tokens=True)
     print(f"\n[OUTPUT]")
     print(f"  Generated text: '{generated_text}'")
-    print(f"  Generated token IDs: {list(generated_ids)}")
-    print(f"  Generated tokens: {[tok.decode([tid]) for tid in generated_ids]}")
+    print(f"  Generated token IDs: {generated_ids.tolist()}")
+    print(f"  Generated tokens: {[tok.decode([tid]) for tid in generated_ids.tolist()]}")
 
     # =========================================================================
     # Print captured data
