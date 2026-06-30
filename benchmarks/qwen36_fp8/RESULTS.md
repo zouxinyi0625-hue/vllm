@@ -33,3 +33,19 @@
 - `language_model_only` has minimal impact on Qwen3.6 (~2 tok/s difference vs mtp5)
 - MTP k=5 provides ~17% speedup over baseline
 - Qwen3.6 baseline is ~19% faster than Gemma4 E004, but with MTP both converge to ~2000 tok/s
+
+---
+
+## DFlash Speculative Decoding — FAILED on A100
+
+**Config**: `dflash15_text_only.json` — DFlash k=15 with `z-lab/Qwen3.6-35B-A3B-DFlash` draft model
+
+**Result**: CRASH — `CUDA error: no kernel image is available for execution on the device`
+
+**Root cause**: Qwen3.6 uses hybrid architecture with **GDN (Gated Delta Network) linear attention** layers (`gdn_linear_attn.py`). The GDN kernel is compiled for **sm_90+ only** (Hopper/Blackwell). A100 (sm_80) does not have a compatible kernel image.
+
+**Implication**: DFlash (and any speculative decoding that triggers full model profiling including GDN layers) cannot run on A100 for Qwen3.6. This is a model architecture limitation, not a vLLM or DFlash bug.
+
+**Workaround**: Use H100/B200 GPUs, or use SGLang with `--attention-backend trtllm_mha` which may have different kernel fallback paths.
+
+**Note**: MTP k=5 works fine on A100 because it reuses the target model's forward pass without a separate drafter warmup that triggers GDN kernel compilation.
