@@ -62,6 +62,21 @@ def main():
     # =========================================================================
     captured = OrderedDict()
 
+    # First, print all module names to understand the structure
+    print(f"\n[MODULE NAMES] Scanning model structure...")
+    all_names = [name for name, _ in model.named_modules()]
+    # Print a sample of interesting modules
+    interesting = [n for n in all_names if any(k in n for k in
+                   ["attn", "mlp", "router", "moe", "expert", "gate",
+                    "embed", "norm", "block_sparse"])]
+    print(f"  Total modules: {len(all_names)}")
+    print(f"  Interesting modules ({len(interesting)}):")
+    for n in interesting[:80]:
+        print(f"    {n}")
+    if len(interesting) > 80:
+        print(f"    ... ({len(interesting) - 80} more)")
+    print()
+
     def make_hook(name):
         def hook_fn(module, input, output):
             if isinstance(output, tuple):
