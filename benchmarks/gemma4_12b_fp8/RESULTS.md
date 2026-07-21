@@ -14,16 +14,16 @@ attribute, DSpark draft-quant config, offline dspark wiring.
 
 ### sc1_delta_v2 aggregate (offline, 1000 prompts)
 
-| Config | draft | output tok/s | total tok/s |
-|---|---|---:|---:|
-| `12b_e011_no_mtp_bf16` | none (pure target) | _pending_ | _pending_ |
-| `12b_e011_mtp_bf16` | Google MTP assistant | **1140.60** | 5135.87 |
-| `12b_dspark_bf16` | DSpark block7 (zero-shot pretrain) | **1134.35** | 5068.09 |
+| Config | draft | output tok/s | total tok/s | speedup vs no-mtp |
+|---|---|---:|---:|---:|
+| `12b_e011_no_mtp_bf16` | none (pure target) | 790.72 | 3546.15 | 1.00× |
+| `12b_e011_mtp_bf16` | Google MTP assistant | **1140.60** | 5135.87 | **1.44×** |
+| `12b_dspark_bf16` | DSpark block7 (zero-shot pretrain) | **1134.35** | 5068.09 | **1.43×** |
 
-On the generic sc1 distribution, zero-shot DSpark ≈ MTP (within noise, ~0.5%).
-This is expected: the DSpark draft's advantage is trained on MAI Profile, not
-sc1. The MAI-Profile finetuned draft is the one expected to pull ahead (see
-per-layer below).
+On the generic sc1 distribution, zero-shot DSpark ≈ MTP (within noise, ~0.5%),
+both ~1.44× over the pure-target baseline. This is expected: the DSpark draft's
+advantage is trained on MAI Profile, not sc1. The MAI-Profile finetuned draft is
+the one expected to pull ahead (see per-layer below).
 
 ### MAI Profile per-layer (online, 200 prompts/layer, unlimited concurrency)
 
@@ -54,8 +54,54 @@ is identical. Confirms the vLLM DSpark deployment faithfully reproduces the
 training-side draft behavior.
 
 **MAI-Profile finetuned draft** (`/tmp/models/dspark_finetune`, warm-start
-finetune, DSpark eval accept_len 5.86): _pending — expected to lift the hard
-free-form layers; seasonality already saturated._
+finetune from the block7 pretrain, DSpark eval accept_len 5.86):
+
+| Layer | accept_rate% | accept_len | out tok/s |
+|---|---:|---:|---:|
+| layer3_seasonality | 99.27 | 7.95 | 3586.1 |
+| layer4_commercial_preference | 71.30 | 5.99 | 1778.1 |
+| layer1_actual | 65.64 | 5.60 | 1385.6 |
+| layer2_temporal | 54.35 | 4.80 | 1154.9 |
+| layer1_intent | 49.58 | 4.47 | 1456.7 |
+
+Per-position acceptance (%):
+
+| Layer | pos0 | pos1 | pos2 | pos3 | pos4 | pos5 | pos6 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| layer3_seasonality | 99.87 | 99.72 | 99.51 | 99.30 | 99.08 | 98.84 | 98.61 |
+| layer4_commercial_preference | 90.32 | 82.07 | 75.65 | 69.50 | 65.09 | 60.57 | 55.94 |
+| layer1_actual | 87.87 | 77.30 | 69.49 | 63.24 | 58.03 | 53.56 | 50.02 |
+| layer2_temporal | 81.90 | 68.84 | 58.83 | 51.08 | 44.74 | 39.56 | 35.50 |
+| layer1_intent | 79.21 | 62.92 | 52.01 | 44.82 | 39.77 | 35.98 | 32.38 |
+
+**Zero-shot → finetune uplift (accept_len):** every layer improves, and the
+improvement scales inversely with layer difficulty — the hard free-form layers
+gain the most, seasonality (already saturated) barely moves.
+
+| Layer | zero-shot | finetune | Δ accept_len | Δ accept_rate |
+|---|---:|---:|---:|---:|
+| layer4_commercial_preference | 4.43 | 5.99 | **+1.56** | +22.3 pts |
+| layer2_temporal | 3.52 | 4.80 | **+1.28** | +18.4 pts |
+| layer1_intent | 3.53 | 4.47 | **+0.94** | +13.5 pts |
+| layer1_actual | 4.94 | 5.60 | **+0.66** | +9.4 pts |
+| layer3_seasonality | 7.83 | 7.95 | +0.12 | +1.7 pts |
+
+**Zero-shot → finetune uplift (output tok/s):** the throughput gain tracks the
+accept_len gain — hard free-form layers gain 12–21%, the saturated seasonality
+layer is flat.
+
+| Layer | zero-shot tok/s | finetune tok/s | Δ tok/s | Δ% |
+|---|---:|---:|---:|---:|
+| layer4_commercial_preference | 1470.9 | 1778.1 | +307.2 | **+20.9%** |
+| layer1_intent | 1247.0 | 1456.7 | +209.7 | **+16.8%** |
+| layer2_temporal | 1031.5 | 1154.9 | +123.4 | **+12.0%** |
+| layer1_actual | 1338.8 | 1385.6 | +46.8 | +3.5% |
+| layer3_seasonality | 3590.5 | 3586.1 | −4.4 | −0.1% |
+
+This is the core result: warm-start finetuning the DSpark draft on MAI Profile
+lifts exactly the layers the zero-shot draft is weakest on, validating the
+project thesis (train our own draft on MAI Profile). Aligns with the DSpark eval
+(finetune 5.86 > zero-shot 4.72 aggregate).
 
 **MTP baseline (bf16, per-layer):** _pending._
 
