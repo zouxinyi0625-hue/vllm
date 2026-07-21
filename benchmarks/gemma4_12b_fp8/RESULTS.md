@@ -1,5 +1,66 @@
 # Gemma4 12B FP8 Benchmark Scaffold — 26B Alignment Results
 
+> **Newest results at top.** The bf16 DSpark-vs-MTP comparison below is the
+> current active work on the `dev/gemma4_patch_gb6ff8a2f5` branch (upstream
+> base `b6ff8a2f5`). The original 26B fp8 alignment history follows further down.
+
+## bf16 DSpark vs MTP on 12B dense (2026-07-21, branch dev/gemma4_patch_gb6ff8a2f5)
+
+All runs: 12B dense **bf16** target (no fp8), `enforce_eager=true`,
+`gpu_memory_utilization=0.95`, `spec_tokens=7`, same env/sampling. Configs:
+`12b_e011_no_mtp_bf16` / `12b_e011_mtp_bf16` / `12b_dspark_bf16`. Code fixes
+that unblocked these: MTP embedding-sharing guard (26B), DSpark `.causal`
+attribute, DSpark draft-quant config, offline dspark wiring.
+
+### sc1_delta_v2 aggregate (offline, 1000 prompts)
+
+| Config | draft | output tok/s | total tok/s |
+|---|---|---:|---:|
+| `12b_e011_no_mtp_bf16` | none (pure target) | _pending_ | _pending_ |
+| `12b_e011_mtp_bf16` | Google MTP assistant | **1140.60** | 5135.87 |
+| `12b_dspark_bf16` | DSpark block7 (zero-shot pretrain) | **1134.35** | 5068.09 |
+
+On the generic sc1 distribution, zero-shot DSpark ≈ MTP (within noise, ~0.5%).
+This is expected: the DSpark draft's advantage is trained on MAI Profile, not
+sc1. The MAI-Profile finetuned draft is the one expected to pull ahead (see
+per-layer below).
+
+### MAI Profile per-layer (online, 200 prompts/layer, unlimited concurrency)
+
+**DSpark block7 zero-shot pretrain draft** (`/tmp/models/gemma4_12b/dspark_speculator`):
+
+| Layer | accept_rate% | accept_len | out tok/s |
+|---|---:|---:|---:|
+| layer3_seasonality | 97.56 | 7.83 | 3590.5 |
+| layer1_actual | 56.24 | 4.94 | 1338.8 |
+| layer4_commercial_preference | 49.02 | 4.43 | 1470.9 |
+| layer1_intent | 36.08 | 3.53 | 1247.0 |
+| layer2_temporal | 35.95 | 3.52 | 1031.5 |
+
+Per-position acceptance (%):
+
+| Layer | pos0 | pos1 | pos2 | pos3 | pos4 | pos5 | pos6 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| layer3_seasonality | 99.94 | 99.75 | 99.32 | 98.49 | 97.78 | 95.19 | 92.48 |
+| layer1_actual | 82.60 | 69.80 | 60.01 | 52.76 | 47.21 | 42.44 | 38.83 |
+| layer4_commercial_preference | 79.81 | 66.85 | 55.99 | 45.98 | 39.27 | 31.69 | 23.54 |
+| layer1_intent | 74.34 | 52.22 | 38.68 | 30.14 | 24.21 | 18.88 | 14.05 |
+| layer2_temporal | 74.87 | 54.43 | 39.98 | 29.53 | 22.85 | 17.60 | 12.36 |
+
+Matches DSpark's own eval: seasonality is near-saturated (accept_len 7.83 at
+k=7, DSpark eval flagged it the easiest layer at 5.88), the free-form layers
+(intent/temporal/actual/commercial) are hard, and the layer difficulty ordering
+is identical. Confirms the vLLM DSpark deployment faithfully reproduces the
+training-side draft behavior.
+
+**MAI-Profile finetuned draft** (`/tmp/models/dspark_finetune`, warm-start
+finetune, DSpark eval accept_len 5.86): _pending — expected to lift the hard
+free-form layers; seasonality already saturated._
+
+**MTP baseline (bf16, per-layer):** _pending._
+
+---
+
 This file records the 26B Gemma4 MoE alignment runs used to validate the new `benchmarks/gemma4_12b_fp8/` scaffold before switching to 12B dense FP8 experiments.
 
 ## Environment
