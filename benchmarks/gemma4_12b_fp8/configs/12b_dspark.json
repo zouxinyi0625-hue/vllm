@@ -1,0 +1,30 @@
+{
+  "name": "12b_dspark",
+  "description": "12B Gemma4 dense DSpark config: FP8 target (identical env/sampling/concurrency to 12b_e011_mtp baseline) + DSpark draft (deepseek-ai/dspark_gemma4_12b_block7). spec_method=dspark uses vLLM --speculative-config (method=dspark). Native block size = 7, so spec_tokens=7 (vs 5 for MTP/eagle3). gpu_memory_utilization lowered to 0.8 for the 262144-vocab draft headroom (per vLLM PR #47216). Apples-to-apples vs 12b_e011_mtp except draft+method+spec_tokens.",
+  "model": "/tmp/models/gemma4_12b/model",
+  "spec_method": "dspark",
+  "speculator_model": "/tmp/models/gemma4_12b/dspark_speculator",
+  "assistant_model": "",
+  "served_model_name": "gemma4-12b",
+  "tokenizer": "/tmp/models/gemma4_12b/model",
+  "dataset_path": "../gemma4_moe_fp8/datasets/sc1_delta_v2.jsonl",
+  "num_prompts": 1000,
+  "max_tokens": 8192,
+  "temperature": 0.7,
+  "top_p": 0.95,
+  "max_model_len": 24576,
+  "max_num_seqs": 128,
+  "max_num_batched_tokens": 16384,
+  "gpu_memory_utilization": 0.8,
+  "quantization": "fp8",
+  "kv_cache_dtype": "auto",
+  "enforce_eager": true,
+  "spec_tokens": 7,
+  "async_scheduling": true,
+  "enable_prefix_caching": true,
+  "env": {
+    "VLLM_USE_FLASHINFER_MOE_FP8": "0",
+    "VLLM_USE_FLASHINFER_SAMPLER": "0",
+    "VLLM_MOE_USE_DEEP_GEMM": "0"
+  }
+}

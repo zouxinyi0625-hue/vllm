@@ -257,3 +257,7 @@ vllm/grpc/vllm_engine_pb2.pyi
 
 # Ignore generated cpu headers 
 csrc/cpu/cpu_attn_dispatch_generated.h
+
+# Keep gemma4_12b_fp8 benchmark configs (override benchmarks/**/*.json ignore)
+!benchmarks/gemma4_12b_fp8/configs/
+!benchmarks/gemma4_12b_fp8/configs/*.json
