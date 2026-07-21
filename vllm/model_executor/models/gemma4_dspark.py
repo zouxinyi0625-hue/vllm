@@ -24,7 +24,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from .gemma4_mtp import Gemma4MTPAttention, Gemma4MTPDecoderLayer
 from .qwen3_dflash import DFlashQwen3Model, _dflash_layer_causal
 from .qwen3_dspark import DSparkMarkovHead, Qwen3DSparkForCausalLM
-from .utils import extract_layer_index, maybe_prefix
+from .utils import extract_layer_index, get_draft_quant_config, maybe_prefix
 
 
 class Gemma4DSparkAttention(Gemma4MTPAttention):
@@ -146,7 +146,13 @@ class Gemma4DSparkModel(DFlashQwen3Model):
         )
         current_vllm_config = get_current_vllm_config()
         cache_config = current_vllm_config.cache_config
-        quant_config = current_vllm_config.quant_config
+        # Use the DRAFT model's own quantization config, not the target's.
+        # The dspark draft ships bf16, so this is None and k_proj.weight stays
+        # a plain [kv, hidden] tensor. Using the global (target) quant_config
+        # would fp8/Marlin-pack the draft's k_proj, breaking the hand-fused
+        # _project_context_kv F.linear path (it reads .weight directly).
+        # Target stays fp8; only the draft is kept unquantized.
+        quant_config = get_draft_quant_config(vllm_config)
 
         self.embed_tokens = VocabParallelEmbedding(
             config.vocab_size,
