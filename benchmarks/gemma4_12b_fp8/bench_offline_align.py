@@ -141,17 +141,21 @@ def build_llm_kwargs(cfg: dict[str, Any]) -> dict[str, Any]:
     assistant_model = cfg.get("assistant_model")
     speculator_model = cfg.get("speculator_model")
     if spec_tokens > 0:
-        if spec_method == "eagle3":
-            # EAGLE-3 uses a self-contained speculator via speculative_config,
-            # mirroring the serve --speculative-config JSON path.
+        if spec_method in ("eagle3", "dspark"):
+            # EAGLE-3 and DSpark use a self-contained speculator via
+            # speculative_config, mirroring the serve --speculative-config JSON
+            # path. The method is carried through from the config so the online
+            # and offline drivers stay identical (DSpark auto-normalizes
+            # target_layer_ids / block_size from the draft; num_speculative_tokens
+            # comes from spec_tokens, e.g. 7 for dspark_gemma4_12b_block7).
             if not speculator_model:
                 raise ValueError(
-                    "spec_method=eagle3 requires 'speculator_model' (empty)"
+                    f"spec_method={spec_method} requires 'speculator_model' (empty)"
                 )
             kwargs["speculative_config"] = {
                 "model": speculator_model,
                 "num_speculative_tokens": spec_tokens,
-                "method": "eagle3",
+                "method": spec_method,
             }
         else:
             # Default: MTP assistant draft via spec_model / spec_tokens.
