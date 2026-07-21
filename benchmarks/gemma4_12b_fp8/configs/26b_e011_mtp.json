@@ -16,7 +16,7 @@
   "gpu_memory_utilization": 0.95,
   "quantization": "fp8",
   "kv_cache_dtype": "auto",
-  "enforce_eager": false,
+  "enforce_eager": true,
   "spec_tokens": 5,
   "async_scheduling": true,
   "enable_prefix_caching": true,
