@@ -15,7 +15,7 @@
   "max_model_len": 24576,
   "max_num_seqs": 128,
   "max_num_batched_tokens": 16384,
-  "gpu_memory_utilization": 0.8,
+  "gpu_memory_utilization": 0.95,
   "quantization": "",
   "kv_cache_dtype": "auto",
   "enforce_eager": true,
