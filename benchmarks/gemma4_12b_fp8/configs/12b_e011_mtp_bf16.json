@@ -1,6 +1,6 @@
 {
   "name": "12b_e011_mtp_bf16",
-  "description": "12B Gemma4 dense MTP, bf16 target+assistant (no fp8). Apples-to-apples baseline for 12b_dspark_bf16: identical env/sampling/util/eager/dataset, only the draft differs (MTP assistant k=5 vs DSpark block7 k=7). Each keeps its native spec_tokens. Use this (not the fp8 12b_e011_mtp) when comparing against the bf16 DSpark run.",
+  "description": "12B Gemma4 dense MTP, bf16 target+assistant (no fp8). Apples-to-apples baseline for 12b_dspark_bf16: identical env/sampling/util/eager/dataset AND spec_tokens=7, so only the draft method differs (MTP assistant vs DSpark block7). spec_tokens matched to 7 (vs the usual MTP k=5) so accept_len / per-position are directly comparable to DSpark block7. Use this (not the fp8 12b_e011_mtp) when comparing against the bf16 DSpark run.",
   "model": "/tmp/models/gemma4_12b/model",
   "assistant_model": "/tmp/models/gemma4_12b/assistant",
   "served_model_name": "gemma4-12b",
@@ -17,7 +17,7 @@
   "quantization": "",
   "kv_cache_dtype": "auto",
   "enforce_eager": true,
-  "spec_tokens": 5,
+  "spec_tokens": 7,
   "async_scheduling": true,
   "enable_prefix_caching": true,
   "env": {
