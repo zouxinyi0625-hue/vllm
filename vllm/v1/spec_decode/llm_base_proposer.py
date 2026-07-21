@@ -1477,7 +1477,18 @@ class SpecDecodeBaseProposer:
                     "Sharing target model embedding weights with the draft model."
                 )
 
-            if share_embeddings:
+            # The width-mismatch guard below only applies to EAGLE drafts,
+            # which operate in their own embedding width and cannot reuse a
+            # target embedding of a different dim. MTP drafts (no
+            # has_own_embed_tokens attribute) require the target's
+            # backbone-dim embedding: pre_projection expects
+            # 2 * backbone_hidden_size inputs (embed ++ hidden), and the
+            # normalizer is sqrt(backbone_hidden_size). For MTP with
+            # draft_dim != backbone_dim (e.g. 26B: draft 1024 vs backbone
+            # 2816), keeping the draft's own 1024-dim embedding makes the
+            # concat mismatch pre_projection's 2*backbone weight. So skip the
+            # guard for MTP and always share the target embedding.
+            if share_embeddings and hasattr(self.model, "has_own_embed_tokens"):
                 draft_embed = self.model.model.embed_tokens
                 # Only share when both models use the same embedding width.
                 # Guard with isinstance so non-Tensor weights (e.g. in tests)
