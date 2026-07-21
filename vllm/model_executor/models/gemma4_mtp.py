@@ -530,6 +530,7 @@ class Gemma4MTP(nn.Module):
         draft_cfg = vllm_config.speculative_config.draft_model_config
         gen_cfg = draft_cfg.try_get_generation_config()
         self._suppress_token_ids = gen_cfg.get("suppress_tokens") if gen_cfg else None
+        self._suppress_token_ids_tensor: torch.Tensor | None = None
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
@@ -582,7 +583,17 @@ class Gemma4MTP(nn.Module):
         else:
             logits = self.logits_processor(self.lm_head, hidden_states)
         if logits is not None and self._suppress_token_ids:
-            logits[:, self._suppress_token_ids] = -float("inf")
+            # Index with a GPU tensor, not a Python list. A list index makes
+            # PyTorch build a CPU index tensor, which fails during CUDA graph
+            # capture ("Cannot copy between CPU and CUDA tensors ... unless
+            # pinned"). Cache the ids as a device tensor on first use.
+            if self._suppress_token_ids_tensor is None:
+                self._suppress_token_ids_tensor = torch.as_tensor(
+                    self._suppress_token_ids,
+                    dtype=torch.long,
+                    device=logits.device,
+                )
+            logits[:, self._suppress_token_ids_tensor] = -float("inf")
         return logits
 
     def get_top_tokens(
