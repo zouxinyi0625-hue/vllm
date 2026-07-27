@@ -83,12 +83,18 @@ class ExtractHiddenStatesProposer:
         if self._mtp_kv:
             tcfg = getattr(vllm_config.model_config.hf_config, "text_config",
                            vllm_config.model_config.hf_config)
-            # sliding: num_kv_heads * head_dim ; full: num_kv_heads * global_head_dim
+            # sliding layers: num_key_value_heads * head_dim
+            # full layers: (num_global_key_value_heads if k_eq_v else
+            #   num_key_value_heads) * global_head_dim
             n_kv = getattr(tcfg, "num_key_value_heads", 0)
             head_dim = getattr(tcfg, "head_dim", 0)
             global_head_dim = getattr(tcfg, "global_head_dim", head_dim)
+            k_eq_v = getattr(tcfg, "attention_k_eq_v", False)
+            full_kv_heads = (
+                getattr(tcfg, "num_global_key_value_heads", n_kv) if k_eq_v else n_kv
+            )
             sliding_w = n_kv * head_dim
-            full_w = n_kv * global_head_dim
+            full_w = full_kv_heads * global_head_dim
             self._mtp_kv_widths = [
                 ("sliding_k", sliding_w), ("sliding_v", sliding_w),
                 ("full_k", full_w), ("full_v", full_w),
