@@ -482,6 +482,28 @@ class Gemma4Attention(nn.Module):
                         f"{kv_shared_layer_index}.self_attn.attn"
                     )
 
+        # Gemma4 MTP online training data-gen (OFF by default): identify whether
+        # THIS layer is a shared-KV SOURCE, i.e. the last non-shared layer of its
+        # attention type -- exactly the layer whose K/V the deploy-time MTP draft
+        # reads via KV-sharing. When capture is enabled, forward() records this
+        # layer's post-RoPE/post-norm K/V so it can be stored to Mooncake as the
+        # draft's training input.
+        self._mtp_kv_capture = False
+        self._mtp_kv_layer_type = None
+        from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
+        if _mtpkv.is_enabled() and num_kv_shared_layers > 0 and not self.is_kv_shared_layer:
+            first_shared = config.num_hidden_layers - num_kv_shared_layers
+            non_shared_types = config.layer_types[:first_shared]
+            my_type = config.layer_types[layer_idx]
+            # last non-shared layer index of my type
+            last_of_type = (
+                len(non_shared_types) - 1 - non_shared_types[::-1].index(my_type)
+                if my_type in non_shared_types else -1
+            )
+            if layer_idx == last_of_type:
+                self._mtp_kv_capture = True
+                self._mtp_kv_layer_type = my_type
+
         self.rotary_emb = get_rope(
             self.head_dim,
             max_position=max_position_embeddings,
@@ -532,6 +554,15 @@ class Gemma4Attention(nn.Module):
         else:
             # Shared: only apply RoPE to Q
             q = self.rotary_emb(positions, q, k)[0]
+
+        # Gemma4 MTP training capture (OFF by default): record this source
+        # layer's post-RoPE/post-norm K/V for the online draft-training data.
+        # k/v here are [num_tokens, num_kv_heads * head_dim] -- exactly what the
+        # deploy-time draft consumes via KV-sharing and what the HF training
+        # path stores as shared_kv_states.
+        if self._mtp_kv_capture:
+            from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
+            _mtpkv.record(self._mtp_kv_layer_type, k, v)
 
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
