@@ -69,6 +69,13 @@ def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
         return
     # Detach + clone so later in-place ops (if any) can't corrupt the capture.
     _buf()[layer_type] = (k.detach(), v.detach())
+    # Diagnostic dump path also fires here so it works on ANY inference path
+    # (bench / deploy Gemma4Proposer), not only the extract_hidden_states
+    # training proposer that calls take(). Only dump once BOTH layer types are
+    # present (so the file has sliding + full together).
+    buf = _buf()
+    if "sliding_attention" in buf and "full_attention" in buf:
+        _maybe_dump(dict(buf))
 
 
 def take() -> dict:
