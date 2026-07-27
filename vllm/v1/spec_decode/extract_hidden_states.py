@@ -69,8 +69,38 @@ class ExtractHiddenStatesProposer:
             )
         self.num_hidden_states = len(layer_ids)
         self.hidden_size = vllm_config.model_config.get_hidden_size()
+
+        # Gemma4 MTP online data-gen (OFF by default): also carry the target's
+        # shared-source K/V (sliding L28 + full L29) captured during the target
+        # forward, packed as 4 extra "pseudo-aux-layers" in the same mover
+        # tensor. Each KV tensor is [T, kv_heads*head_dim] padded to hidden_size.
+        # Order: sliding_k, sliding_v, full_k, full_v. The connector slices them
+        # back using the recorded true widths.
+        from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
+        self._mtp_kv = _mtpkv.is_enabled()
+        self._mtp_kv_slots = 0
+        self._mtp_kv_widths: list[tuple[str, int]] = []
+        if self._mtp_kv:
+            tcfg = getattr(vllm_config.model_config.hf_config, "text_config",
+                           vllm_config.model_config.hf_config)
+            # sliding: num_kv_heads * head_dim ; full: num_kv_heads * global_head_dim
+            n_kv = getattr(tcfg, "num_key_value_heads", 0)
+            head_dim = getattr(tcfg, "head_dim", 0)
+            global_head_dim = getattr(tcfg, "global_head_dim", head_dim)
+            sliding_w = n_kv * head_dim
+            full_w = n_kv * global_head_dim
+            self._mtp_kv_widths = [
+                ("sliding_k", sliding_w), ("sliding_v", sliding_w),
+                ("full_k", full_w), ("full_v", full_w),
+            ]
+            self._mtp_kv_slots = len(self._mtp_kv_widths)
+            assert all(w <= self.hidden_size for _, w in self._mtp_kv_widths), (
+                f"KV width exceeds hidden_size {self.hidden_size}: {self._mtp_kv_widths}"
+            )
+
+        total_slots = self.num_hidden_states + self._mtp_kv_slots
         self.hidden_states = torch.zeros(
-            (self.max_num_tokens, self.num_hidden_states, self.hidden_size),
+            (self.max_num_tokens, total_slots, self.hidden_size),
             dtype=self.dtype,
             device=device,
         )
@@ -121,7 +151,27 @@ class ExtractHiddenStatesProposer:
         num_tokens = stacked_hidden_states.shape[0]
 
         # Copy hidden states to buffer
-        self.hidden_states[:num_tokens] = stacked_hidden_states
+        self.hidden_states[:num_tokens, : self.num_hidden_states] = stacked_hidden_states
+
+        # Gemma4 MTP: append captured shared-source K/V as pseudo-aux-layers.
+        if self._mtp_kv and self._mtp_kv_slots:
+            from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
+            captured = _mtpkv.take()  # {layer_type: (k, v)}
+            sl = captured.get("sliding_attention")
+            fu = captured.get("full_attention")
+            tensors = {
+                "sliding_k": sl[0] if sl else None,
+                "sliding_v": sl[1] if sl else None,
+                "full_k": fu[0] if fu else None,
+                "full_v": fu[1] if fu else None,
+            }
+            for j, (name, width) in enumerate(self._mtp_kv_widths):
+                slot = self.num_hidden_states + j
+                self.hidden_states[:num_tokens, slot, :].zero_()
+                t = tensors.get(name)
+                if t is not None:
+                    n = min(t.shape[0], num_tokens)
+                    self.hidden_states[:n, slot, :width] = t[:n, :width].to(self.dtype)
 
         assert self.attn_metadata_builder is not None
         attn_metadata = self.attn_metadata_builder.build_for_drafting(

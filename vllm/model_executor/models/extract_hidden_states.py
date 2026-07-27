@@ -347,6 +347,13 @@ class ExtractHiddenStatesModel(nn.Module):
             getattr(self.hf_config, "eagle_aux_hidden_state_layer_ids", [])
         )
 
+        # Gemma4 MTP online data-gen (OFF by default): 4 extra pseudo-aux-layers
+        # carry the target shared-source K/V (sliding_k/v, full_k/v). Must match
+        # the widened buffer in the ExtractHiddenStatesProposer.
+        from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
+        self._mtp_kv_slots = 4 if _mtpkv.is_enabled() else 0
+        self.num_stored_layers = self.num_hidden_states + self._mtp_kv_slots
+
         cache_config = vllm_config.cache_config
 
         # Hidden states dtype should be independent of KV cache dtype.
@@ -361,7 +368,7 @@ class ExtractHiddenStatesModel(nn.Module):
         self.cache_only_layers = nn.ModuleDict(
             {
                 str(self.target_num_hidden_layers): CacheOnlyAttentionLayer(
-                    num_heads=self.num_hidden_states,
+                    num_heads=self.num_stored_layers,
                     head_size=self.hidden_size,
                     cache_config=cache_config,
                     prefix=maybe_prefix(
