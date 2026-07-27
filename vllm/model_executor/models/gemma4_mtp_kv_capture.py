@@ -82,4 +82,29 @@ def take() -> dict:
     b = _buf()
     out = dict(b)
     b.clear()
+    _maybe_dump(out)
     return out
+
+
+# Diagnostic: dump the first non-empty capture to disk for HF-vs-vLLM shared_kv
+# verification. Set VLLM_GEMMA4_MTP_DUMP_DIR to enable. Dumps once per process.
+_DUMP_DIR = os.environ.get("VLLM_GEMMA4_MTP_DUMP_DIR")
+_dumped = {"done": False}
+
+
+def _maybe_dump(captured: dict) -> None:
+    if not _DUMP_DIR or _dumped["done"] or not captured:
+        return
+    try:
+        payload = {}
+        for ltype, (k, v) in captured.items():
+            payload[f"{ltype}_k"] = k.detach().float().cpu()
+            payload[f"{ltype}_v"] = v.detach().float().cpu()
+        os.makedirs(_DUMP_DIR, exist_ok=True)
+        fp = os.path.join(_DUMP_DIR, "vllm_shared_kv.pt")
+        torch.save(payload, fp)
+        shapes = {kk: tuple(vv.shape) for kk, vv in payload.items()}
+        print(f"[MTP-KV-DUMP] wrote {fp} shapes={shapes}", flush=True)
+        _dumped["done"] = True
+    except Exception as e:
+        print(f"[MTP-KV-DUMP] failed: {e}", flush=True)
