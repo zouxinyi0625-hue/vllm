@@ -6,22 +6,22 @@ TorchSpec trains a Gemma4 MTP draft that, at deploy time, shares the target's
 K/V from the last non-shared sliding layer (L28) and full layer (L29) via
 vLLM's KV-sharing mechanism. To generate training data with vLLM (so the draft
 learns exactly the deploy-time distribution), we must capture those same K/V
-tensors during the target forward and hand them to the Mooncake connector.
+tensors during the target forward.
 
-This module is a lightweight, OFF-BY-DEFAULT side channel:
+FULLGRAPH CONSTRAINT: vLLM torch.compiles the model forward in *fullgraph* mode,
+which forbids graph breaks. A plain Python function with side effects (dict
+write / file dump) triggers a graph break and errors ("Skip calling
+torch.compiler.disable()d function"). Even @torch._dynamo.disable is rejected.
 
-  * Enabled only when env ``VLLM_GEMMA4_MTP_CAPTURE_KV=1`` is set (TorchSpec's
-    VllmEngine exports it when running Gemma4 MTP online data-gen).
-  * Gemma4Attention.forward, for the target's last non-shared sliding/full
-    layers, calls ``record(layer_type, k, v)`` with the post-RoPE + post-norm
-    K/V -- byte-for-byte the same tensors the deploy-time draft reads, and the
-    same representation the HF training path stores
-    (transformers modeling_gemma4.py:1266-1276).
-  * The captured tensors are read out per forward by the connector / proposer
-    glue and stored to Mooncake alongside last_hidden.
+SOLUTION: expose capture as a custom torch op (torch.library). Custom ops are
+opaque to Dynamo (a legal single node in the fullgraph), so their Python body --
+including copying the tensors aside and dumping to disk -- runs normally without
+breaking the graph. This mirrors how vLLM itself moves data out of compiled
+forwards (unified_kv_cache_update is a custom op).
 
-When disabled, ``record`` is a no-op with negligible overhead (one env check
-cached at import) and vLLM's numerics are completely untouched.
+OFF-BY-DEFAULT: enabled only when env VLLM_GEMMA4_MTP_CAPTURE_KV=1. Diagnostic
+disk dump when VLLM_GEMMA4_MTP_DUMP_DIR is also set. When disabled, record() is
+a cheap no-op and vLLM numerics are untouched.
 """
 
 from __future__ import annotations
@@ -32,12 +32,12 @@ import threading
 import torch
 
 _local = threading.local()
+_dumped = {"done": False}
 
 
 def is_enabled() -> bool:
-    # Read live each call (NOT an import-time snapshot): vLLM's import graph /
-    # worker fork order can import this module before the env is set, which
-    # would freeze a stale False. Live read is cheap and robust.
+    # Live env read (NOT an import-time snapshot): vLLM's import graph / worker
+    # fork order can import this module before the env is set.
     return os.environ.get("VLLM_GEMMA4_MTP_CAPTURE_KV", "0") == "1"
 
 
@@ -50,64 +50,31 @@ def _buf() -> dict:
 
 
 def reset() -> None:
-    """Clear the capture buffer at the start of a target forward."""
+    """Clear the per-forward capture buffer."""
     if is_enabled():
         _buf().clear()
 
 
-@torch._dynamo.disable
-def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
-    """Record post-RoPE/post-norm K/V for a shared-source layer.
-
-    Wrapped in torch._dynamo.disable so vLLM's torch.compile treats it as an
-    opaque call (does NOT trace the dict write / dump side effects, which would
-    otherwise error or be dropped under Dynamo).
-
-    Args:
-        layer_type: "sliding_attention" or "full_attention".
-        k, v: shape [num_tokens, num_kv_heads * head_dim] (as computed in
-            Gemma4Attention.forward right before self.attn(q, k, v)).
-    """
-    if not is_enabled():
-        return
-    # Detach + clone so later in-place ops (if any) can't corrupt the capture.
-    _buf()[layer_type] = (k.detach(), v.detach())
-    # Diagnostic dump path also fires here so it works on ANY inference path
-    # (bench / deploy Gemma4Proposer), not only the extract_hidden_states
-    # training proposer that calls take(). Only dump once BOTH layer types are
-    # present (so the file has sliding + full together).
-    buf = _buf()
-    if "sliding_attention" in buf and "full_attention" in buf:
-        _maybe_dump(dict(buf))
-
-
 def take() -> dict:
-    """Return and clear the current forward's captured K/V.
-
-    Returns:
-        dict mapping layer_type -> (k, v). Empty if nothing was captured.
-    """
+    """Return and clear the current forward's captured K/V (training proposer)."""
     if not is_enabled():
         return {}
     b = _buf()
     out = dict(b)
     b.clear()
-    _maybe_dump(out)
     return out
 
 
-# Diagnostic: dump the first non-empty capture to disk for HF-vs-vLLM shared_kv
-# verification. Set VLLM_GEMMA4_MTP_DUMP_DIR to enable. Dumps once per process.
-_dumped = {"done": False}
-
-
-def _maybe_dump(captured: dict) -> None:
+def _maybe_dump() -> None:
     dump_dir = os.environ.get("VLLM_GEMMA4_MTP_DUMP_DIR")
-    if not dump_dir or _dumped["done"] or not captured:
+    if not dump_dir or _dumped["done"]:
+        return
+    buf = _buf()
+    if "sliding_attention" not in buf or "full_attention" not in buf:
         return
     try:
         payload = {}
-        for ltype, (k, v) in captured.items():
+        for ltype, (k, v) in buf.items():
             payload[f"{ltype}_k"] = k.detach().float().cpu()
             payload[f"{ltype}_v"] = v.detach().float().cpu()
         os.makedirs(dump_dir, exist_ok=True)
@@ -118,3 +85,40 @@ def _maybe_dump(captured: dict) -> None:
         _dumped["done"] = True
     except Exception as e:
         print(f"[MTP-KV-DUMP] failed: {e}", flush=True)
+
+
+# ---- Custom op: opaque to Dynamo, so its Python body is fullgraph-safe. ----
+# layer_kind: 0 = sliding_attention, 1 = full_attention.
+_KIND = {0: "sliding_attention", 1: "full_attention"}
+
+try:
+    _LIB = torch.library.Library("gemma4_mtp", "FRAGMENT")
+    _LIB.define("record(int layer_kind, Tensor k, Tensor v) -> ()")
+
+    def _record_impl(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
+        if not is_enabled():
+            return
+        ltype = _KIND.get(int(layer_kind))
+        if ltype is None:
+            return
+        _buf()[ltype] = (k.detach().clone(), v.detach().clone())
+        _maybe_dump()
+
+    def _record_meta(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
+        return None
+
+    _LIB.impl("record", _record_impl, "CompositeExplicitAutograd")
+    _LIB.impl("record", _record_meta, "Meta")
+    _OP_OK = True
+except Exception as _e:  # pragma: no cover - defensive
+    _OP_OK = False
+    print(f"[MTP-KV] custom op registration failed: {_e}", flush=True)
+
+
+def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
+    """Capture entry called from Gemma4Attention.forward (inside fullgraph).
+
+    Dispatches to the custom op so Dynamo sees one opaque node (no graph break).
+    """
+    kind = 0 if layer_type == "sliding_attention" else 1
+    torch.ops.gemma4_mtp.record(kind, k, v)
