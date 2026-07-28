@@ -129,9 +129,10 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
         # kv_cache + the draft's slot_mapping so the HF probe can reconstruct the
         # EXACT shared_kv (no recompute). Pure tensor reads in the proposer.
         try:
-            from vllm.forward_context import get_forward_context
-            fctx = get_forward_context()
-            layers = getattr(fctx, "no_compile_layers", None)
+            # static_forward_context maps layer_name -> Attention module and is
+            # always available (not the runtime forward context, which has
+            # already exited by here).
+            layers = self.vllm_config.compilation_config.static_forward_context
             shared_kv_dump = {}
             if layers is not None and hasattr(self.model, "model") and \
                     hasattr(self.model.model, "layers"):
