@@ -88,6 +88,49 @@ def _dump_draft_alignment(self, branch, target_token_ids, next_token_ids,
         print(f"[DRAFT-ALIGN] dump failed: {e}")
 
 
+def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
+                              sample_hidden_states, draft_token_ids,
+                              token_indices_to_sample, target_token_ids,
+                              next_token_ids):
+    """Dump draft step-0 input/output tensors to disk so an HF probe can load
+    the EXACT same inputs (no re-tokenize, no chat-template drift) and check
+    whether HF's Gemma4Assistant forward reproduces vLLM's draft argmax.
+    env-gated, once, pure-Python (proposer, not compiled forward)."""
+    import os
+    if os.environ.get("VLLM_DUMP_DRAFT_TENSORS") != "1":
+        return
+    if _DRAFT_DUMP_DONE[0] >= 1:
+        return
+    _DRAFT_DUMP_DONE[0] += 1
+    try:
+        import torch
+        path = os.environ.get("VLLM_DUMP_DRAFT_PATH", "/tmp/vllm_draft_step0.pt")
+        payload = {
+            "input_ids": model_kwargs.get("input_ids"),
+            "positions": model_kwargs.get("positions"),
+            "inputs_embeds": model_kwargs.get("inputs_embeds"),
+            "hidden_states": model_kwargs.get("hidden_states"),
+            "last_hidden_states": last_hidden_states,
+            "sample_hidden_states": sample_hidden_states,
+            "draft_token_ids": draft_token_ids,
+            "token_indices_to_sample": token_indices_to_sample,
+            "target_token_ids": target_token_ids,
+            "next_token_ids": next_token_ids,
+            "num_speculative_tokens": self.num_speculative_tokens,
+            "pass_hidden_states_to_model": self.pass_hidden_states_to_model,
+        }
+        cpu = {}
+        for k, v in payload.items():
+            cpu[k] = v.detach().cpu() if isinstance(v, torch.Tensor) else v
+        torch.save(cpu, path)
+        print(f"\n[DRAFT-TENSORS] saved step-0 draft input/output to {path}")
+        print(f"  input_ids shape={tuple(payload['input_ids'].shape) if payload['input_ids'] is not None else None}")
+        print(f"  hidden_states shape={tuple(payload['hidden_states'].shape) if payload['hidden_states'] is not None else None}")
+        print(f"  draft_token_ids[:8]={draft_token_ids.detach().cpu().flatten()[:8].tolist()}")
+    except Exception as e:
+        print(f"[DRAFT-TENSORS] dump failed: {e}")
+
+
 class SpecDecodeBaseProposer:
     def __init__(
         self,
@@ -566,6 +609,12 @@ class SpecDecodeBaseProposer:
             sample_hidden_states, sampling_metadata
         )
         draft_probs_list = None if draft_probs is None else [draft_probs]
+
+        _dump_draft_step0_tensors(
+            self, model_kwargs, last_hidden_states, sample_hidden_states,
+            draft_token_ids, token_indices_to_sample, target_token_ids,
+            next_token_ids,
+        )
 
         if self.allowed_attn_types is not None:
             for group_md in per_group_attn_metadata:
