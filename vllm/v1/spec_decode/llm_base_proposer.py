@@ -122,6 +122,45 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
         cpu = {}
         for k, v in payload.items():
             cpu[k] = v.detach().cpu() if isinstance(v, torch.Tensor) else v
+
+        # --- Path B: gather the target shared_kv the draft actually reads ---
+        # For each draft attn layer, kv_sharing_target_layer_name points at the
+        # target layer whose paged KV cache the draft reads. Pull that layer's
+        # kv_cache + the draft's slot_mapping so the HF probe can reconstruct the
+        # EXACT shared_kv (no recompute). Pure tensor reads in the proposer.
+        try:
+            from vllm.forward_context import get_forward_context
+            fctx = get_forward_context()
+            layers = getattr(fctx, "no_compile_layers", None)
+            shared_kv_dump = {}
+            if layers is not None and hasattr(self.model, "model") and \
+                    hasattr(self.model.model, "layers"):
+                for di, layer in enumerate(self.model.model.layers):
+                    attn = getattr(getattr(layer, "self_attn", None), "attn", None)
+                    if attn is None:
+                        continue
+                    tgt_name = getattr(attn, "kv_sharing_target_layer_name", None)
+                    if tgt_name is None or tgt_name not in layers:
+                        continue
+                    tgt_attn = layers[tgt_name]
+                    kvc = getattr(tgt_attn, "kv_cache", None)
+                    # kv_cache may be a list per virtual engine
+                    if isinstance(kvc, (list, tuple)):
+                        kvc = kvc[0] if kvc else None
+                    if kvc is None:
+                        continue
+                    shared_kv_dump[f"draft{di}_target={tgt_name}"] = (
+                        kvc.detach().cpu()
+                    )
+            cpu["shared_kv_caches"] = shared_kv_dump
+            cpu["slot_mapping"] = (
+                model_kwargs.get("slot_mapping").detach().cpu()
+                if model_kwargs.get("slot_mapping") is not None else None
+            )
+            print(f"  shared_kv layers dumped: {list(shared_kv_dump.keys())}")
+        except Exception as e:
+            print(f"  [Path B] shared_kv gather failed: {e}")
+
         torch.save(cpu, path)
         print(f"\n[DRAFT-TENSORS] saved step-0 draft input/output to {path}")
         print(f"  input_ids shape={tuple(payload['input_ids'].shape) if payload['input_ids'] is not None else None}")
