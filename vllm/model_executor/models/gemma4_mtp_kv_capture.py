@@ -96,12 +96,19 @@ try:
     _LIB.define("record(int layer_kind, Tensor k, Tensor v) -> ()")
 
     def _record_impl(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
+        _dbg = os.environ.get("VLLM_GEMMA4_MTP_DEBUG") == "1"
         if not is_enabled():
+            if _dbg:
+                print(f"[MTP-KV-OP] called kind={int(layer_kind)} but is_enabled=False",
+                      flush=True)
             return
         ltype = _KIND.get(int(layer_kind))
         if ltype is None:
             return
         _buf()[ltype] = (k.detach().clone(), v.detach().clone())
+        if _dbg:
+            print(f"[MTP-KV-OP] captured {ltype} k={tuple(k.shape)} "
+                  f"buf_keys={list(_buf().keys())}", flush=True)
         _maybe_dump()
 
     def _record_meta(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
