@@ -52,6 +52,42 @@ from vllm.v1.worker.utils import AttentionGroup
 logger = init_logger(__name__)
 
 
+_DRAFT_DUMP_DONE = [0]
+
+
+def _dump_draft_alignment(self, branch, target_token_ids, next_token_ids,
+                          input_ids, token_indices_to_sample, num_tokens):
+    """Diagnostic: dump the (draft input_ids vs target_token_ids) alignment for
+    the FIRST proposal pass, to settle whether draft position t consumes token_t
+    or token_{t+1}. env-gated, prints a handful of values once, pure-Python
+    (runs in the proposer, NOT inside the compiled model forward)."""
+    import os
+    if os.environ.get("VLLM_DUMP_DRAFT_ALIGN") != "1":
+        return
+    if _DRAFT_DUMP_DONE[0] >= int(os.environ.get("VLLM_DUMP_DRAFT_N", "3")):
+        return
+    _DRAFT_DUMP_DONE[0] += 1
+    try:
+        n = min(12, int(num_tokens))
+        tt = target_token_ids[:n].detach().cpu().tolist()
+        ii = input_ids[:n].detach().cpu().tolist()
+        nt = next_token_ids.detach().cpu().tolist()
+        tis = (token_indices_to_sample.detach().cpu().tolist()
+               if token_indices_to_sample is not None else None)
+        print(f"\n[DRAFT-ALIGN #{_DRAFT_DUMP_DONE[0]}] branch={branch} "
+              f"num_tokens={int(num_tokens)} "
+              f"pass_hidden={self.pass_hidden_states_to_model}")
+        print(f"  target_token_ids[:12] = {tt}")
+        print(f"  draft input_ids[:12]  = {ii}")
+        print(f"  next_token_ids        = {nt[:8]}")
+        print(f"  token_idx_to_sample   = {tis[:8] if tis else None}")
+        # alignment check: does input_ids[t] == target_token_ids[t+1]?
+        shifted = all(ii[t] == tt[t + 1] for t in range(min(n - 1, 6)))
+        print(f"  input_ids[t]==target_token_ids[t+1] (shift+1)? {shifted}")
+    except Exception as e:
+        print(f"[DRAFT-ALIGN] dump failed: {e}")
+
+
 class SpecDecodeBaseProposer:
     def __init__(
         self,
@@ -727,6 +763,8 @@ class SpecDecodeBaseProposer:
 
             self.hidden_states[:num_tokens] = target_hidden_states
 
+            _dump_draft_alignment(self, "default", target_token_ids, next_token_ids,
+                                  self.input_ids, token_indices_to_sample, num_tokens)
             return num_tokens, token_indices_to_sample, cad
         else:
             assert self.is_rejected_token_mask is not None
@@ -827,6 +865,9 @@ class SpecDecodeBaseProposer:
                 new_slot_mapping=new_slot_mapping,
             )
 
+            _dump_draft_alignment(self, "extra_slots", target_token_ids, next_token_ids,
+                                  self.input_ids, token_indices_to_sample,
+                                  total_num_output_tokens)
             return total_num_output_tokens, token_indices_to_sample, new_cad
 
     def build_model_inputs_first_pass(
