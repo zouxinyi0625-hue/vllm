@@ -162,10 +162,12 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
                         continue
                     # kvc: [num_blocks, 2, block_size, heads, dim]
                     nb, two, bs, h, dd = kvc.shape
-                    flat = kvc.permute(1, 0, 2, 3, 4).reshape(two, nb * bs, h, dd)
                     sm_c = sm.clamp(max=nb * bs - 1).to(kvc.device)
-                    k_g = flat[0].index_select(0, sm_c).cpu()  # [num_tokens,h,dd]
-                    v_g = flat[1].index_select(0, sm_c).cpu()
+                    blk = sm_c // bs           # [num_tokens] block index
+                    off = sm_c % bs            # [num_tokens] offset in block
+                    # gather only num_tokens slots -- no full-pool reshape/copy
+                    k_g = kvc[blk, 0, off].cpu()   # [num_tokens, heads, dim]
+                    v_g = kvc[blk, 1, off].cpu()
                     shared_kv_dump[tgt_name] = {"k": k_g, "v": v_g}
             cpu["shared_kv_gathered"] = shared_kv_dump
             cpu["slot_mapping"] = (
