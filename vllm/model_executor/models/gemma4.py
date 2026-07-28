@@ -491,7 +491,8 @@ class Gemma4Attention(nn.Module):
         self._mtp_kv_capture = False
         self._mtp_kv_layer_type = None
         from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
-        if _mtpkv.is_enabled() and num_kv_shared_layers > 0 and not self.is_kv_shared_layer:
+        _mtp_en = _mtpkv.is_enabled()
+        if _mtp_en and num_kv_shared_layers > 0 and not self.is_kv_shared_layer:
             first_shared = config.num_hidden_layers - num_kv_shared_layers
             non_shared_types = config.layer_types[:first_shared]
             my_type = config.layer_types[layer_idx]
@@ -503,6 +504,11 @@ class Gemma4Attention(nn.Module):
             if layer_idx == last_of_type:
                 self._mtp_kv_capture = True
                 self._mtp_kv_layer_type = my_type
+        import os as _os
+        if _os.environ.get("VLLM_GEMMA4_MTP_DEBUG") == "1":
+            print(f"[MTP-CAPTURE-INIT] layer_idx={layer_idx} enabled={_mtp_en} "
+                  f"num_kv_shared={num_kv_shared_layers} is_shared={self.is_kv_shared_layer} "
+                  f"capture={self._mtp_kv_capture} type={self._mtp_kv_layer_type}", flush=True)
 
         self.rotary_emb = get_rope(
             self.head_dim,
