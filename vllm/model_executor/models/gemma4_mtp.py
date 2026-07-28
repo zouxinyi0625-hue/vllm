@@ -61,6 +61,7 @@ logger = init_logger(__name__)
 # Diagnostic: per-layer draft hidden dump (env VLLM_DUMP_DRAFT_LAYERS=1).
 # Filled inside Gemma4MultiTokenPredictor.forward, read by the proposer dump.
 _GEMMA4_LAYER_DUMP: list = []
+_GEMMA4_ATTN_DUMP: list = []
 
 
 class Gemma4MTPMaskedEmbedder(nn.Module):
@@ -261,6 +262,17 @@ class Gemma4MTPAttention(nn.Module):
         )
         attn_output = self.attn(q, kv_dummy, kv_dummy)
         output, _ = self.o_proj(attn_output)
+
+        import os as _os2
+        if _os2.environ.get("VLLM_DUMP_DRAFT_LAYERS") == "1":
+            lt = self.config.layer_types[extract_layer_index(self.attn.layer_name)] \
+                if hasattr(self.attn, "layer_name") else "?"
+            _GEMMA4_ATTN_DUMP.append({
+                "num_kv_heads": self.num_kv_heads, "head_dim": self.head_dim,
+                "num_heads": self.num_heads, "scaling": self.scaling,
+                "q_postrope": q.detach().to("cpu", torch.float32).clone(),
+                "attn_output": attn_output.detach().to("cpu", torch.float32).clone(),
+            })
         return output
 
 
@@ -472,6 +484,7 @@ class Gemma4MultiTokenPredictor(nn.Module):
         _dump_layers = _os.environ.get("VLLM_DUMP_DRAFT_LAYERS") == "1"
         if _dump_layers:
             _GEMMA4_LAYER_DUMP.clear()
+            _GEMMA4_ATTN_DUMP.clear()
             _GEMMA4_LAYER_DUMP.append(("pre_projection", hidden_states.detach().to("cpu", torch.float32).clone()))
 
         residual = None
