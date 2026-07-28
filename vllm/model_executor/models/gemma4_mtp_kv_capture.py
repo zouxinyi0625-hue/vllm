@@ -31,16 +31,14 @@ import threading
 
 import torch
 
-_ENABLED = os.environ.get("VLLM_GEMMA4_MTP_CAPTURE_KV", "0") == "1"
-
-# Per-thread capture buffer: {layer_type: (k, v)} for the CURRENT forward.
-# vLLM worker runs the model forward on a single thread; thread-local keeps
-# TP workers / multiple engines from clobbering each other.
 _local = threading.local()
 
 
 def is_enabled() -> bool:
-    return _ENABLED
+    # Read live each call (NOT an import-time snapshot): vLLM's import graph /
+    # worker fork order can import this module before the env is set, which
+    # would freeze a stale False. Live read is cheap and robust.
+    return os.environ.get("VLLM_GEMMA4_MTP_CAPTURE_KV", "0") == "1"
 
 
 def _buf() -> dict:
@@ -53,7 +51,7 @@ def _buf() -> dict:
 
 def reset() -> None:
     """Clear the capture buffer at the start of a target forward."""
-    if _ENABLED:
+    if is_enabled():
         _buf().clear()
 
 
@@ -65,7 +63,7 @@ def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
         k, v: shape [num_tokens, num_kv_heads * head_dim] (as computed in
             Gemma4Attention.forward right before self.attn(q, k, v)).
     """
-    if not _ENABLED:
+    if not is_enabled():
         return
     # Detach + clone so later in-place ops (if any) can't corrupt the capture.
     _buf()[layer_type] = (k.detach(), v.detach())
@@ -84,7 +82,7 @@ def take() -> dict:
     Returns:
         dict mapping layer_type -> (k, v). Empty if nothing was captured.
     """
-    if not _ENABLED:
+    if not is_enabled():
         return {}
     b = _buf()
     out = dict(b)
@@ -95,20 +93,20 @@ def take() -> dict:
 
 # Diagnostic: dump the first non-empty capture to disk for HF-vs-vLLM shared_kv
 # verification. Set VLLM_GEMMA4_MTP_DUMP_DIR to enable. Dumps once per process.
-_DUMP_DIR = os.environ.get("VLLM_GEMMA4_MTP_DUMP_DIR")
 _dumped = {"done": False}
 
 
 def _maybe_dump(captured: dict) -> None:
-    if not _DUMP_DIR or _dumped["done"] or not captured:
+    dump_dir = os.environ.get("VLLM_GEMMA4_MTP_DUMP_DIR")
+    if not dump_dir or _dumped["done"] or not captured:
         return
     try:
         payload = {}
         for ltype, (k, v) in captured.items():
             payload[f"{ltype}_k"] = k.detach().float().cpu()
             payload[f"{ltype}_v"] = v.detach().float().cpu()
-        os.makedirs(_DUMP_DIR, exist_ok=True)
-        fp = os.path.join(_DUMP_DIR, "vllm_shared_kv.pt")
+        os.makedirs(dump_dir, exist_ok=True)
+        fp = os.path.join(dump_dir, "vllm_shared_kv.pt")
         torch.save(payload, fp)
         shapes = {kk: tuple(vv.shape) for kk, vv in payload.items()}
         print(f"[MTP-KV-DUMP] wrote {fp} shapes={shapes}", flush=True)
