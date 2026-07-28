@@ -91,7 +91,7 @@ def _dump_draft_alignment(self, branch, target_token_ids, next_token_ids,
 def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
                               sample_hidden_states, draft_token_ids,
                               token_indices_to_sample, target_token_ids,
-                              next_token_ids):
+                              next_token_ids, common_attn_metadata=None):
     """Dump draft step-0 input/output tensors to disk so an HF probe can load
     the EXACT same inputs (no re-tokenize, no chat-template drift) and check
     whether HF's Gemma4Assistant forward reproduces vLLM's draft argmax.
@@ -133,9 +133,17 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
             # always available (not the runtime forward context, which has
             # already exited by here).
             layers = self.vllm_config.compilation_config.static_forward_context
+            # slot_mapping locates where each of the num_tokens target tokens'
+            # K/V live in the paged pool: slot = block_idx*block_size + offset.
+            slot_mapping = None
+            if common_attn_metadata is not None:
+                slot_mapping = getattr(common_attn_metadata, "slot_mapping", None)
             shared_kv_dump = {}
-            if layers is not None and hasattr(self.model, "model") and \
+            if layers is not None and slot_mapping is not None and \
+                    hasattr(self.model, "model") and \
                     hasattr(self.model.model, "layers"):
+                sm = slot_mapping.detach().to(torch.long)
+                seen_targets = {}
                 for di, layer in enumerate(self.model.model.layers):
                     attn = getattr(getattr(layer, "self_attn", None), "attn", None)
                     if attn is None:
@@ -143,22 +151,28 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
                     tgt_name = getattr(attn, "kv_sharing_target_layer_name", None)
                     if tgt_name is None or tgt_name not in layers:
                         continue
+                    if tgt_name in seen_targets:
+                        continue  # same target layer -> gather once
+                    seen_targets[tgt_name] = True
                     tgt_attn = layers[tgt_name]
                     kvc = getattr(tgt_attn, "kv_cache", None)
-                    # kv_cache may be a list per virtual engine
                     if isinstance(kvc, (list, tuple)):
                         kvc = kvc[0] if kvc else None
                     if kvc is None:
                         continue
-                    shared_kv_dump[f"draft{di}_target={tgt_name}"] = (
-                        kvc.detach().cpu()
-                    )
-            cpu["shared_kv_caches"] = shared_kv_dump
+                    # kvc: [num_blocks, 2, block_size, heads, dim]
+                    nb, two, bs, h, dd = kvc.shape
+                    flat = kvc.permute(1, 0, 2, 3, 4).reshape(two, nb * bs, h, dd)
+                    sm_c = sm.clamp(max=nb * bs - 1).to(kvc.device)
+                    k_g = flat[0].index_select(0, sm_c).cpu()  # [num_tokens,h,dd]
+                    v_g = flat[1].index_select(0, sm_c).cpu()
+                    shared_kv_dump[tgt_name] = {"k": k_g, "v": v_g}
+            cpu["shared_kv_gathered"] = shared_kv_dump
             cpu["slot_mapping"] = (
-                model_kwargs.get("slot_mapping").detach().cpu()
-                if model_kwargs.get("slot_mapping") is not None else None
-            )
-            print(f"  shared_kv layers dumped: {list(shared_kv_dump.keys())}")
+                slot_mapping.detach().cpu() if slot_mapping is not None else None)
+            print(f"  shared_kv gathered for: {list(shared_kv_dump.keys())}")
+            for kk, vv in shared_kv_dump.items():
+                print(f"    {kk}: k={tuple(vv['k'].shape)} v={tuple(vv['v'].shape)}")
         except Exception as e:
             print(f"  [Path B] shared_kv gather failed: {e}")
 
@@ -653,7 +667,7 @@ class SpecDecodeBaseProposer:
         _dump_draft_step0_tensors(
             self, model_kwargs, last_hidden_states, sample_hidden_states,
             draft_token_ids, token_indices_to_sample, target_token_ids,
-            next_token_ids,
+            next_token_ids, common_attn_metadata,
         )
 
         if self.allowed_attn_types is not None:
