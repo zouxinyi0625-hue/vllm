@@ -575,7 +575,10 @@ class Gemma4Attention(nn.Module):
         # path stores as shared_kv_states.
         if self._mtp_kv_capture:
             from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
-            _mtpkv.record(self._mtp_kv_layer_type, k, v)
+            _dummy = _mtpkv.record(self._mtp_kv_layer_type, k, v)
+            # Create a real (but numerically-zero) data dependency on the op's
+            # output so Inductor/fullgraph cannot dead-code-eliminate the capture.
+            k = k + _dummy.sum() * 0
 
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)

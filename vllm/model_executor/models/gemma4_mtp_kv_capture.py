@@ -93,26 +93,29 @@ _KIND = {0: "sliding_attention", 1: "full_attention"}
 
 try:
     _LIB = torch.library.Library("gemma4_mtp", "FRAGMENT")
-    _LIB.define("record(int layer_kind, Tensor k, Tensor v) -> ()")
+    # Return a dummy Tensor (NOT ()) so the op has a used output -> Inductor /
+    # fullgraph won't dead-code-eliminate it (mirrors unified_kv_cache_update).
+    _LIB.define("record(int layer_kind, Tensor k, Tensor v) -> Tensor")
 
-    def _record_impl(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
+    def _record_impl(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         _dbg = os.environ.get("VLLM_GEMMA4_MTP_DEBUG") == "1"
         if not is_enabled():
             if _dbg:
                 print(f"[MTP-KV-OP] called kind={int(layer_kind)} but is_enabled=False",
                       flush=True)
-            return
+            return k.new_zeros(1)
         ltype = _KIND.get(int(layer_kind))
         if ltype is None:
-            return
+            return k.new_zeros(1)
         _buf()[ltype] = (k.detach().clone(), v.detach().clone())
         if _dbg:
             print(f"[MTP-KV-OP] captured {ltype} k={tuple(k.shape)} "
                   f"buf_keys={list(_buf().keys())}", flush=True)
         _maybe_dump()
+        return k.new_zeros(1)
 
-    def _record_meta(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> None:
-        return None
+    def _record_meta(layer_kind: int, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        return k.new_zeros(1)
 
     _LIB.impl("record", _record_impl, "CompositeExplicitAutograd")
     _LIB.impl("record", _record_meta, "Meta")
@@ -122,10 +125,12 @@ except Exception as _e:  # pragma: no cover - defensive
     print(f"[MTP-KV] custom op registration failed: {_e}", flush=True)
 
 
-def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
+def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """Capture entry called from Gemma4Attention.forward (inside fullgraph).
 
     Dispatches to the custom op so Dynamo sees one opaque node (no graph break).
+    Returns the op's dummy tensor; the caller MUST use it (e.g. add into a
+    downstream tensor) so Inductor doesn't dead-code-eliminate the op.
     """
     kind = 0 if layer_type == "sliding_attention" else 1
-    torch.ops.gemma4_mtp.record(kind, k, v)
+    return torch.ops.gemma4_mtp.record(kind, k, v)
