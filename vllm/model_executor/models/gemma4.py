@@ -576,10 +576,6 @@ class Gemma4Attention(nn.Module):
         if self._mtp_kv_capture:
             from vllm.model_executor.models import gemma4_mtp_kv_capture as _mtpkv
             _mtpkv.record(self._mtp_kv_layer_type, k, v)
-            import os as _os2
-            if _os2.environ.get("VLLM_GEMMA4_MTP_DEBUG") == "1":
-                print(f"[MTP-CAPTURE-FWD] recorded {self._mtp_kv_layer_type} "
-                      f"k={tuple(k.shape)} v={tuple(v.shape)}", flush=True)
 
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)

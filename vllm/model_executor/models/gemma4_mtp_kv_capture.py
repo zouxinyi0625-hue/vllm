@@ -55,8 +55,13 @@ def reset() -> None:
         _buf().clear()
 
 
+@torch._dynamo.disable
 def record(layer_type: str, k: torch.Tensor, v: torch.Tensor) -> None:
     """Record post-RoPE/post-norm K/V for a shared-source layer.
+
+    Wrapped in torch._dynamo.disable so vLLM's torch.compile treats it as an
+    opaque call (does NOT trace the dict write / dump side effects, which would
+    otherwise error or be dropped under Dynamo).
 
     Args:
         layer_type: "sliding_attention" or "full_attention".
