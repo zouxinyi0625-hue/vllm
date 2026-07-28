@@ -58,6 +58,11 @@ from .utils import (
 logger = init_logger(__name__)
 
 
+# Diagnostic: per-layer draft hidden dump (env VLLM_DUMP_DRAFT_LAYERS=1).
+# Filled inside Gemma4MultiTokenPredictor.forward, read by the proposer dump.
+_GEMMA4_LAYER_DUMP: list = []
+
+
 class Gemma4MTPMaskedEmbedder(nn.Module):
     """Sparse logit computation via centroid-based vocabulary masking.
 
@@ -463,15 +468,26 @@ class Gemma4MultiTokenPredictor(nn.Module):
         combined = torch.cat([inputs_embeds, hidden_states], dim=-1)
         hidden_states, _ = self.pre_projection(combined)
 
+        import os as _os
+        _dump_layers = _os.environ.get("VLLM_DUMP_DRAFT_LAYERS") == "1"
+        if _dump_layers:
+            _GEMMA4_LAYER_DUMP.clear()
+            _GEMMA4_LAYER_DUMP.append(("pre_projection", hidden_states.detach().to("cpu", torch.float32).clone()))
+
         residual = None
-        for layer in self.layers:
+        for _li, layer in enumerate(self.layers):
             hidden_states, residual = layer(
                 positions=positions,
                 hidden_states=hidden_states,
                 residual=residual,
             )
+            if _dump_layers:
+                _GEMMA4_LAYER_DUMP.append(
+                    (f"layer{_li}", hidden_states.detach().to("cpu", torch.float32).clone()))
 
         draft_hidden_states = self.norm(hidden_states)
+        if _dump_layers:
+            _GEMMA4_LAYER_DUMP.append(("final_norm", draft_hidden_states.detach().to("cpu", torch.float32).clone()))
 
         backbone_hidden_states, _ = self.post_projection(draft_hidden_states)
         return draft_hidden_states, backbone_hidden_states

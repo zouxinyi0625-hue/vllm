@@ -124,7 +124,6 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
             cpu[k] = v.detach().cpu() if isinstance(v, torch.Tensor) else v
 
         # --- Path B: gather the target shared_kv the draft actually reads ---
-        # For each draft attn layer, kv_sharing_target_layer_name points at the
         # target layer whose paged KV cache the draft reads. Pull that layer's
         # kv_cache + the draft's slot_mapping so the HF probe can reconstruct the
         # EXACT shared_kv (no recompute). Pure tensor reads in the proposer.
@@ -177,6 +176,16 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
                 print(f"    {kk}: k={tuple(vv['k'].shape)} v={tuple(vv['v'].shape)}")
         except Exception as e:
             print(f"  [Path B] shared_kv gather failed: {e}")
+
+        # --- per-layer draft hidden dump (VLLM_DUMP_DRAFT_LAYERS=1) ---
+        try:
+            from vllm.model_executor.models.gemma4_mtp import _GEMMA4_LAYER_DUMP
+            if _GEMMA4_LAYER_DUMP:
+                cpu["layer_hidden"] = [
+                    (name, t.clone()) for name, t in _GEMMA4_LAYER_DUMP]
+                print(f"  layer_hidden dumped: {[n for n, _ in _GEMMA4_LAYER_DUMP]}")
+        except Exception as e:
+            print(f"  [layer dump] failed: {e}")
 
         torch.save(cpu, path)
         print(f"\n[DRAFT-TENSORS] saved step-0 draft input/output to {path}")
