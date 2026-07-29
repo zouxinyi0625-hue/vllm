@@ -250,6 +250,11 @@ class Gemma4MTPAttention(nn.Module):
         q = self.q_norm(q)
         q = q.flatten(-2, -1)
 
+        import os as _osq2
+        _q_prerope = None
+        if _osq2.environ.get("VLLM_DUMP_DRAFT_LAYERS") == "1":
+            _q_prerope = q.detach().to("cpu", torch.float32).clone()
+
         q, _ = self.rotary_emb(positions, q, None)
 
         # Attention reads K/V from the target's cache via KV sharing;
@@ -271,6 +276,7 @@ class Gemma4MTPAttention(nn.Module):
             _GEMMA4_ATTN_DUMP.append({
                 "num_kv_heads": self.num_kv_heads, "head_dim": self.head_dim,
                 "num_heads": self.num_heads, "scaling": self.scaling,
+                "q_prerope": _q_prerope,
                 "q_postrope": q.detach().to("cpu", torch.float32).clone(),
                 "attn_output": attn_output.detach().to("cpu", torch.float32).clone(),
             })
