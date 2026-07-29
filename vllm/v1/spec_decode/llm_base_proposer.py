@@ -189,6 +189,11 @@ def _dump_draft_step0_tensors(self, model_kwargs, last_hidden_states,
                 cpu["attn_dump"] = list(_GEMMA4_ATTN_DUMP)
                 print(f"  attn_dump: {len(_GEMMA4_ATTN_DUMP)} layers "
                       f"heads={[a['num_kv_heads'] for a in _GEMMA4_ATTN_DUMP]}")
+            from vllm.model_executor.models.gemma4_mtp import _GEMMA4_TGTKV_DUMP
+            if _GEMMA4_TGTKV_DUMP:
+                cpu["tgt_fullkv"] = list(_GEMMA4_TGTKV_DUMP)
+                print(f"  tgt_fullkv: {len(_GEMMA4_TGTKV_DUMP)} "
+                      f"k_shape={tuple(_GEMMA4_TGTKV_DUMP[-1]['k'].shape)}")
         except Exception as e:
             print(f"  [layer dump] failed: {e}")
 

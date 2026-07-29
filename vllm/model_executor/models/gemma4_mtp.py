@@ -62,6 +62,7 @@ logger = init_logger(__name__)
 # Filled inside Gemma4MultiTokenPredictor.forward, read by the proposer dump.
 _GEMMA4_LAYER_DUMP: list = []
 _GEMMA4_ATTN_DUMP: list = []
+_GEMMA4_TGTKV_DUMP: list = []
 
 
 class Gemma4MTPMaskedEmbedder(nn.Module):

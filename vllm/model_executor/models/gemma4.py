@@ -536,6 +536,19 @@ class Gemma4Attention(nn.Module):
         attn_output = self.attn(q, k, v)
         output, _ = self.o_proj(attn_output)
 
+        import os as _os3
+        if _os3.environ.get("VLLM_DUMP_DRAFT_LAYERS") == "1" and \
+                not self.is_kv_shared_layer and \
+                not getattr(self, "is_sliding", True):
+            from vllm.model_executor.models.gemma4_mtp import _GEMMA4_TGTKV_DUMP
+            _GEMMA4_TGTKV_DUMP.clear()
+            _GEMMA4_TGTKV_DUMP.append({
+                "layer": getattr(self.attn, "layer_name", "?"),
+                "k": k.detach().to("cpu", torch.float32).clone(),
+                "v": v.detach().to("cpu", torch.float32).clone(),
+                "num_kv_heads": self.num_kv_heads, "head_dim": self.head_dim,
+            })
+
         return output
 
 
