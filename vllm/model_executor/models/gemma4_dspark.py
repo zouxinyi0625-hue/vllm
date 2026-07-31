@@ -275,8 +275,16 @@ class Gemma4DSparkForCausalLM(Qwen3DSparkForCausalLM):
         assert vllm_config.speculative_config is not None
         self.draft_model_config = vllm_config.speculative_config.draft_model_config
         self.config = self.draft_model_config.hf_config
+        # Draft layers must NOT collide with the target's static_forward_context
+        # attention keys. A text-only Gemma4 target (Gemma4ForCausalLM) registers
+        # its layers as "model.layers.N.self_attn.attn"; using prefix "model" here
+        # would duplicate that key (fine for a multimodal target whose layers live
+        # under "language_model.model.*", but fatal for text-only). Mirror the MTP
+        # draft and namespace under "draft_model". This changes only the Attention
+        # prefix string (static_forward_context key); nn.Module attribute names are
+        # unchanged (self.model -> "model."), so load_weights below is unaffected.
         self.model = Gemma4DSparkModel(
-            vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
+            vllm_config=vllm_config, prefix=maybe_prefix(prefix, "draft_model")
         )
         self.lm_head = ParallelLMHead(
             self.config.vocab_size,
