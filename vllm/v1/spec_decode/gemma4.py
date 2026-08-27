@@ -14,6 +14,7 @@ import torch
 import torch.nn as nn
 
 from vllm.config import VllmConfig, get_layers_from_vllm_config, replace
+from vllm.distributed.parallel_state import get_pp_group
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
 from vllm.v1.attention.backend import CommonAttentionMetadata
@@ -164,6 +165,37 @@ class Gemma4Proposer(SpecDecodeBaseProposer):
                 ),
             )
         return base
+
+    def _maybe_share_embeddings(self, target_language_model: nn.Module) -> None:
+        """Gemma4 MTP must share target embed_tokens even when dims differ.
+
+        Base proposer logic refuses sharing when target/draft embedding widths
+        differ. For Gemma4 MTP this is expected (target backbone dim vs draft
+        hidden dim), and not sharing causes pre_projection input shape mismatch.
+        """
+        if get_pp_group().world_size != 1:
+            logger.info(
+                "Gemma4 MTP: PP>1, skip force-sharing embed_tokens in this path."
+            )
+            return
+
+        inner_model = getattr(target_language_model, "model", None)
+        if inner_model is None:
+            raise AttributeError("Target model does not have 'model' attribute")
+
+        if hasattr(inner_model, "embed_tokens"):
+            target_embed_tokens = inner_model.embed_tokens
+        elif hasattr(inner_model, "embedding"):
+            target_embed_tokens = inner_model.embedding
+        else:
+            raise AttributeError(
+                "Target model does not have 'embed_tokens' or 'embedding' attribute"
+            )
+
+        if hasattr(self.model.model, "embed_tokens"):
+            del self.model.model.embed_tokens
+        self.model.model.embed_tokens = target_embed_tokens
+        logger.info("Gemma4 MTP: force-sharing target embed_tokens with draft model.")
 
     def _maybe_share_lm_head(self, target_language_model: nn.Module) -> None:
         """Gemma4 MTP always keeps its own draft-dim lm_head.
